@@ -722,7 +722,7 @@ class Robot(Job):
             
             # 如果该聊天没有历史记录，创建一个新的队列
             if chat_id not in self._msg_history:
-                self._msg_history[chat_id] = deque(maxlen=200)
+                self._msg_history[chat_id] = deque(maxlen=500)
                 
             # 获取发送者昵称
             if msg.from_group():
