@@ -5,7 +5,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from queue import Empty
-from threading import Thread
+from threading import Thread, Lock
 import os
 import random
 import shutil
@@ -25,6 +25,7 @@ from base.func_weather import Weather
 from base.func_news import News
 from base.func_tigerbot import TigerBot
 from base.func_xinghuo_web import XinghuoWeb
+from base.func_duel import start_duel, get_rank_list, get_player_stats
 from configuration import Config
 from constants import ChatType
 from job_mgmt import Job
@@ -43,6 +44,9 @@ class Robot(Job):
         self.wxid = self.wcf.get_self_wxid()
         self.allContacts = self.getAllContacts()
         self._msg_timestamps = []
+        # 决斗线程管理
+        self._duel_thread = None
+        self._duel_lock = Lock()
 
         if ChatType.is_in_chat_types(chat_type):
             if chat_type == ChatType.TIGER_BOT.value and TigerBot.value_check(self.config.TIGERBOT):
@@ -253,6 +257,27 @@ class Robot(Job):
         
         return False
 
+    def get_bot_help_info(self) -> str:
+        """获取机器人的帮助信息，包含所有可用指令"""
+        help_text = [
+            "🤖 泡泡的指令列表 🤖",
+            "",
+            "【决斗系统】",
+            "▶️ 决斗@XX - 向某人发起决斗",
+            "▶️ 决斗排行/排行榜 - 查看决斗排行榜",
+            "▶️ 我的战绩/决斗战绩 - 查看自己的决斗战绩",
+            "",
+            "",
+            "【成语】",
+            "▶️ #成语 - 接龙",
+            "▶️ ?成语 - 查询成语释义",
+            "",
+            "【其他】",
+            "▶️ info/帮助/指令 - 显示此帮助信息",
+            "▶️ 直接@机器人 - 进行对话"
+        ]
+        return "\n".join(help_text)
+
     def toAt(self, msg: WxMsg) -> bool:
         """处理被 @ 消息
         :param msg: 微信消息结构
@@ -268,6 +293,57 @@ class Robot(Job):
         perplexity_trigger = self.config.PERPLEXITY.get('trigger_keyword', 'ask') if hasattr(self.config, 'PERPLEXITY') else 'ask'
         
         content = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
+        
+        # 决斗功能处理 - 优化正则匹配
+        duel_match = re.search(r"决斗.*?(?:@|[与和]).*?([^\s@]+)", content)
+        self.LOG.info(f"决斗检测 - 原始内容: {msg.content}, 处理后内容: {content}, 匹配结果: {duel_match}")
+        if duel_match:
+            opponent_name = duel_match.group(1)
+            self.LOG.info(f"决斗对手名称: {opponent_name}")
+            # 寻找群内对应的成员
+            room_members = self.wcf.get_chatroom_members(msg.roomid)
+            opponent_wxid = None
+            for member_wxid, member_name in room_members.items():
+                if opponent_name in member_name:
+                    opponent_wxid = member_wxid
+                    break
+            
+            if opponent_wxid:
+                # 获取挑战者昵称
+                challenger_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+                
+                # 检查并启动决斗线程
+                if not self.start_duel_thread(challenger_name, opponent_name, msg.roomid, True):
+                    self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.roomid)
+                    return True
+                
+                return True
+            else:
+                self.sendTextMsg(f"❌ 没有找到名为 {opponent_name} 的群成员", msg.roomid)
+                return True
+        
+        # 决斗排行榜查询
+        if content == "决斗排行" or content == "决斗排名" or content == "排行榜":
+            rank_list = get_rank_list(10, msg.roomid)  # 传递群ID
+            self.sendTextMsg(rank_list, msg.roomid)
+            return True
+        
+        # 个人战绩查询
+        stats_match = re.search(r"(决斗战绩|我的战绩|战绩查询)(.*)", content)
+        if stats_match:
+            player_name = stats_match.group(2).strip()
+            if not player_name:  # 如果没有指定名字，则查询发送者
+                player_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+            
+            stats = get_player_stats(player_name, msg.roomid)  # 传递群ID
+            self.sendTextMsg(stats, msg.roomid)
+            return True
+        
+        # 帮助信息查询
+        if content.startswith("info") or content == "帮助" or content == "指令":
+            help_info = self.get_bot_help_info()
+            self.sendTextMsg(help_info, msg.roomid)
+            return True
         
         # 阿里文生图处理
         if content.startswith(aliyun_trigger):
@@ -403,6 +479,34 @@ class Robot(Job):
                 return
 
             if msg.is_at(self.wxid):  # 被@
+                # 决斗功能特殊处理 - 直接检测关键词
+                if "决斗" in msg.content:
+                    self.LOG.info(f"群聊中检测到可能的决斗请求: {msg.content}")
+                    # 尝试提取对手名称
+                    duel_match = re.search(r"决斗.*?@([^\s]+)", msg.content)
+                    if duel_match:
+                        opponent_name = duel_match.group(1)
+                        self.LOG.info(f"直接匹配到的决斗对手名称: {opponent_name}")
+                        # 寻找群内对应的成员
+                        room_members = self.wcf.get_chatroom_members(msg.roomid)
+                        opponent_wxid = None
+                        for member_wxid, member_name in room_members.items():
+                            if opponent_name in member_name:
+                                opponent_wxid = member_wxid
+                                break
+                        
+                        if opponent_wxid:
+                            # 获取挑战者昵称
+                            challenger_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+                            
+                            # 检查并启动决斗线程
+                            if not self.start_duel_thread(challenger_name, opponent_name, msg.roomid, True):
+                                self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.roomid)
+                                return True
+                            
+                            return True
+                
+                # 常规@处理
                 self.toAt(msg)
 
             else:  # 其他消息
@@ -423,6 +527,43 @@ class Robot(Job):
                     self.config.reload()
                     self.LOG.info("已更新")
             else:
+                # 决斗功能处理（私聊）
+                duel_match = re.search(r"^决斗\s*(?:@|[与和])\s*([^\s]+)$", msg.content)
+                if duel_match:
+                    opponent_name = duel_match.group(1)
+                    # 获取发送者昵称
+                    sender_name = self.allContacts.get(msg.sender, "挑战者")
+                    
+                    # 检查并启动决斗线程
+                    if not self.start_duel_thread(sender_name, opponent_name, msg.sender, False):
+                        self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.sender)
+                        return True
+                    
+                    return True
+                
+                # 决斗排行榜查询
+                if msg.content == "决斗排行" or msg.content == "决斗排名" or msg.content == "排行榜":
+                    rank_list = get_rank_list(10)  # 私聊不传群ID
+                    self.sendTextMsg(rank_list, msg.sender)
+                    return
+                
+                # 个人战绩查询
+                stats_match = re.search(r"^(决斗战绩|我的战绩|战绩查询)(.*)$", msg.content)
+                if stats_match:
+                    player_name = stats_match.group(2).strip()
+                    if not player_name:  # 如果没有指定名字，则查询发送者
+                        player_name = self.allContacts.get(msg.sender, "未知用户")
+                    
+                    stats = get_player_stats(player_name)  # 私聊不传群ID
+                    self.sendTextMsg(stats, msg.sender)
+                    return
+                
+                # 帮助信息查询
+                if msg.content.startswith("info") or msg.content == "帮助" or msg.content == "指令":
+                    help_info = self.get_bot_help_info()
+                    self.sendTextMsg(help_info, msg.sender)
+                    return
+                
                 # 阿里文生图触发词处理
                 aliyun_trigger = self.config.ALIYUN_IMAGE.get('trigger_keyword', '牛阿里') if hasattr(self.config, 'ALIYUN_IMAGE') else '牛阿里'
                 if msg.content.startswith(aliyun_trigger):
@@ -599,3 +740,67 @@ class Robot(Job):
         report = Weather(self.config.CITY_CODE).get_weather()
         for r in receivers:
             self.sendTextMsg(report, r)
+
+    def sendDuelMsg(self, msg: str, receiver: str) -> None:
+        """发送决斗消息，不受消息频率限制，不记入历史记录
+        :param msg: 消息字符串
+        :param receiver: 接收人wxid或者群id
+        """
+        try:
+            self.LOG.info(f"发送决斗消息 To {receiver}: {msg[:20]}...")
+            self.wcf.send_text(f"{msg}", receiver, "")
+        except Exception as e:
+            self.LOG.error(f"发送决斗消息失败: {e}")
+
+    def run_duel(self, challenger_name, opponent_name, receiver, is_group=False):
+        """在单独线程中运行决斗
+        
+        Args:
+            challenger_name: 挑战者名称
+            opponent_name: 对手名称
+            receiver: 消息接收者(群id或者个人wxid)
+            is_group: 是否是群聊
+        """
+        try:
+            # 开始决斗
+            self.sendDuelMsg("⚔️ 决斗即将开始，请稍等...", receiver)
+            # 传递群组ID参数，私聊时为None
+            group_id = receiver if is_group else None
+            duel_steps = start_duel(challenger_name, opponent_name, group_id)
+            
+            # 逐步发送决斗过程
+            for step in duel_steps:
+                self.sendDuelMsg(step, receiver)
+                time.sleep(1.5)  # 每步之间添加适当延迟
+        except Exception as e:
+            self.LOG.error(f"决斗过程中发生错误: {e}")
+            self.sendDuelMsg(f"决斗过程中发生错误: {e}", receiver)
+        finally:
+            # 释放决斗线程
+            with self._duel_lock:
+                self._duel_thread = None
+            self.LOG.info("决斗线程已结束并销毁")
+    
+    def start_duel_thread(self, challenger_name, opponent_name, receiver, is_group=False):
+        """启动决斗线程
+        
+        Args:
+            challenger_name: 挑战者名称
+            opponent_name: 对手名称
+            receiver: 消息接收者
+            is_group: 是否是群聊
+            
+        Returns:
+            bool: 是否成功启动决斗线程
+        """
+        with self._duel_lock:
+            if self._duel_thread is not None and self._duel_thread.is_alive():
+                return False
+            
+            self._duel_thread = Thread(
+                target=self.run_duel,
+                args=(challenger_name, opponent_name, receiver, is_group),
+                daemon=True
+            )
+            self._duel_thread.start()
+            return True
