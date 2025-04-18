@@ -404,6 +404,8 @@ class Robot(Job):
                 
                 if perplexity_instance:
                     self.sendTextMsg("正在查询Perplexity，请稍候...", msg.roomid, msg.sender)
+                    
+                    # 移除Perplexity时间戳
                     response = perplexity_instance.get_answer(prompt, msg.roomid if msg.from_group() else msg.sender)
                     if response:
                         self.sendTextMsg(response, msg.roomid, msg.sender)
@@ -454,7 +456,12 @@ class Robot(Job):
             rsp = "你@我干嘛？"
         else:  # 接了 ChatGPT，智能回复
             q = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
-            rsp = self.chat.get_answer(q, (msg.roomid if msg.from_group() else msg.sender))
+            
+            # 添加时间戳到用户消息前面
+            current_time = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+            q_with_timestamp = f"[{current_time}] {q}"
+            
+            rsp = self.chat.get_answer(q_with_timestamp, (msg.roomid if msg.from_group() else msg.sender))
 
         if rsp:
             if msg.from_group():
