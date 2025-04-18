@@ -280,6 +280,7 @@ class Robot(Job):
             "",
             "【群聊工具】",
             "▶️ @泡泡 summary/总结 - 总结最近的聊天记录",
+            "▶️ @泡泡 clearmessages/清除历史 - 清除消息历史记录",
             "",
             "【其他】",
             "▶️ info/帮助/指令 - 显示此帮助信息",
@@ -318,6 +319,26 @@ class Robot(Job):
             else:
                 self.sendTextMsg(summary, msg.sender)
                 
+            return True
+        
+        # 处理清除历史命令
+        if content.lower() == "clearmessages" or content == "清除消息" or content == "清除历史":
+            self.LOG.info(f"收到清除消息历史请求: {msg.content}")
+            # 获取聊天ID
+            chat_id = msg.roomid if msg.from_group() else msg.sender
+            
+            # 清除历史
+            if self._clear_message_history(chat_id):
+                if msg.from_group():
+                    self.sendTextMsg("✅ 已清除本群的消息历史记录", msg.roomid, msg.sender)
+                else:
+                    self.sendTextMsg("✅ 已清除与您的消息历史记录", msg.sender)
+            else:
+                if msg.from_group():
+                    self.sendTextMsg("⚠️ 本群没有消息历史记录", msg.roomid, msg.sender)
+                else:
+                    self.sendTextMsg("⚠️ 没有与您的消息历史记录", msg.sender)
+                    
             return True
         
         # 改名命令处理 - 添加到toAt方法中处理被@的情况
@@ -430,7 +451,7 @@ class Robot(Job):
                 if perplexity_instance:
                     self.sendTextMsg("正在查询Perplexity，请稍候...", msg.roomid, msg.sender)
                     
-                    # 移除Perplexity时间戳
+                    # Perplexity不需要添加发送者信息和时间戳
                     response = perplexity_instance.get_answer(prompt, msg.roomid if msg.from_group() else msg.sender)
                     if response:
                         self.sendTextMsg(response, msg.roomid, msg.sender)
@@ -482,11 +503,17 @@ class Robot(Job):
         else:  # 接了 ChatGPT，智能回复
             q = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
             
-            # 添加时间戳到用户消息前面
-            current_time = time.strftime("%H:%M", time.localtime())
-            q_with_timestamp = f"[{current_time}] {q}"
+            # 获取发送者昵称
+            if msg.from_group():
+                sender_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+            else:
+                sender_name = self.allContacts.get(msg.sender, "用户")
             
-            rsp = self.chat.get_answer(q_with_timestamp, (msg.roomid if msg.from_group() else msg.sender))
+            # 添加时间戳和发送者信息到用户消息前面
+            current_time = time.strftime("%H:%M", time.localtime())
+            q_with_info = f"[{current_time}] {sender_name}: {q}"
+            
+            rsp = self.chat.get_answer(q_with_info, (msg.roomid if msg.from_group() else msg.sender))
 
         if rsp:
             if msg.from_group():
@@ -737,6 +764,21 @@ class Robot(Job):
                 "time": time.strftime("%H:%M", time.localtime())
             })
     
+    def _clear_message_history(self, chat_id: str) -> bool:
+        """清除指定聊天的消息历史记录
+        
+        Args:
+            chat_id: 聊天ID（群ID或用户ID）
+            
+        Returns:
+            bool: 是否成功清除
+        """
+        with self._msg_history_lock:
+            if chat_id in self._msg_history:
+                self._msg_history[chat_id].clear()
+                return True
+            return False
+    
     def _summarize_messages(self, chat_id: str) -> str:
         """生成消息总结
         
@@ -814,19 +856,26 @@ class Robot(Job):
         for msg in messages:
             formatted_msgs.append(f"[{msg['time']}] {msg['sender']}: {msg['content']}")
         
-        # 构建提示词
+        # 构建提示词 - 更加客观、中立
         prompt = (
-            "请总结以下消息记录的主要内容。这是一个微信群的对话历史。"
-            "请分析以下几个方面：\n"
-            "1. 主要参与者是谁\n"
-            "2. 核心讨论了哪些话题\n"
-            "3. 对话中的重点或结论\n\n"
-            "消息记录如下：\n\n" + "\n".join(formatted_msgs)
+            "下面是一组聊天消息记录。请提供一个客观的总结，包括：\n"
+            "- 主要参与者\n"
+            "- 讨论的主要话题\n"
+            "- 关键信息和要点\n\n"
+            "请直接给出总结内容，不要添加额外的评论或人格色彩。\n\n"
+            "消息记录:\n" + "\n".join(formatted_msgs)
         )
         
-        # 使用AI模型生成总结
+        # 使用AI模型生成总结 - 创建一个临时的聊天会话ID，避免污染正常对话上下文
         try:
-            summary = self.chat.get_answer(prompt, chat_id)
+            # 对于支持新会话参数的模型，使用特殊标记告知这是独立的总结请求
+            if hasattr(self.chat, 'get_answer_with_context') and callable(getattr(self.chat, 'get_answer_with_context')):
+                # 使用带上下文参数的方法
+                summary = self.chat.get_answer_with_context(prompt, "summary_" + chat_id, clear_context=True)
+            else:
+                # 普通方法，使用特殊会话ID
+                summary = self.chat.get_answer(prompt, "summary_" + chat_id)
+                
             if not summary:
                 return self._basic_summarize(messages)
                 
