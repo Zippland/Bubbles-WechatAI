@@ -9,6 +9,7 @@ from threading import Thread, Lock
 import os
 import random
 import shutil
+from collections import deque  # 添加deque用于消息历史记录
 from base.func_zhipu import ZhiPu
 from image import CogView, AliyunImage, GeminiImage
 
@@ -47,6 +48,10 @@ class Robot(Job):
         # 决斗线程管理
         self._duel_thread = None
         self._duel_lock = Lock()
+        
+        # 消息历史记录 - 存储最近的200条消息
+        self._msg_history = {}  # 使用字典，以群ID或用户ID为键
+        self._msg_history_lock = Lock()  # 添加锁以保证线程安全
 
         if ChatType.is_in_chat_types(chat_type):
             if chat_type == ChatType.TIGER_BOT.value and TigerBot.value_check(self.config.TIGERBOT):
@@ -273,6 +278,9 @@ class Robot(Job):
             "▶️ #成语 - 接龙",
             "▶️ ?成语 - 查询成语释义",
             "",
+            "【群聊工具】",
+            "▶️ @泡泡 summary/总结 - 总结最近的聊天记录",
+            "",
             "【其他】",
             "▶️ info/帮助/指令 - 显示此帮助信息",
             "▶️ 直接@机器人 - 进行对话"
@@ -294,6 +302,23 @@ class Robot(Job):
         perplexity_trigger = self.config.PERPLEXITY.get('trigger_keyword', 'ask') if hasattr(self.config, 'PERPLEXITY') else 'ask'
         
         content = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
+        
+        # 处理消息总结命令
+        if content.lower() == "summary" or content == "总结":
+            self.LOG.info(f"收到消息总结请求: {msg.content}")
+            # 获取聊天ID
+            chat_id = msg.roomid if msg.from_group() else msg.sender
+            
+            # 生成总结
+            summary = self._summarize_messages(chat_id)
+            
+            # 发送总结
+            if msg.from_group():
+                self.sendTextMsg(summary, msg.roomid, msg.sender)
+            else:
+                self.sendTextMsg(summary, msg.sender)
+                
+            return True
         
         # 改名命令处理 - 添加到toAt方法中处理被@的情况
         change_name_match = re.search(r"改名\s+([^\s]+)\s+([^\s]+)", msg.content)
@@ -458,7 +483,7 @@ class Robot(Job):
             q = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
             
             # 添加时间戳到用户消息前面
-            current_time = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+            current_time = time.strftime("%H:%M", time.localtime())
             q_with_timestamp = f"[{current_time}] {q}"
             
             rsp = self.chat.get_answer(q_with_timestamp, (msg.roomid if msg.from_group() else msg.sender))
@@ -482,194 +507,333 @@ class Robot(Job):
         receivers = msg.roomid
         self.sendTextMsg(content, receivers, msg.sender)
         """
+        try:
+            # 记录消息到历史记录
+            self._record_message(msg)
+            
+            # 群聊消息
+            if msg.from_group():
+                # 检测新人加入群聊
+                if msg.type == 10000:
+                    # 使用正则表达式匹配邀请加入群聊的消息
+                    new_member_match = re.search(r'"(.+?)"邀请"(.+?)"加入了群聊', msg.content)
+                    if new_member_match:
+                        inviter = new_member_match.group(1)  # 邀请人
+                        new_member = new_member_match.group(2)  # 新成员
+                        # 使用配置文件中的欢迎语，支持变量替换
+                        welcome_msg = self.config.WELCOME_MSG.format(new_member=new_member, inviter=inviter)
+                        self.sendTextMsg(welcome_msg, msg.roomid, msg.sender)
+                        self.LOG.info(f"已发送欢迎消息给新成员 {new_member} 在群 {msg.roomid}")
+                        return
 
-        # 群聊消息
-        if msg.from_group():
-            # 检测新人加入群聊
-            if msg.type == 10000:
-                # 使用正则表达式匹配邀请加入群聊的消息
-                new_member_match = re.search(r'"(.+?)"邀请"(.+?)"加入了群聊', msg.content)
-                if new_member_match:
-                    inviter = new_member_match.group(1)  # 邀请人
-                    new_member = new_member_match.group(2)  # 新成员
-                    # 使用配置文件中的欢迎语，支持变量替换
-                    welcome_msg = self.config.WELCOME_MSG.format(new_member=new_member, inviter=inviter)
-                    self.sendTextMsg(welcome_msg, msg.roomid, msg.sender)
-                    self.LOG.info(f"已发送欢迎消息给新成员 {new_member} 在群 {msg.roomid}")
+                # 如果在群里被 @
+                if msg.roomid not in self.config.GROUPS:  # 不在配置的响应的群列表里，忽略
                     return
 
-            # 如果在群里被 @
-            if msg.roomid not in self.config.GROUPS:  # 不在配置的响应的群列表里，忽略
-                return
-
-            # 改名命令处理
-            change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
-            if change_name_match:
-                old_name = change_name_match.group(1)
-                new_name = change_name_match.group(2)
-                
-                from base.func_duel import change_player_name
-                result = change_player_name(old_name, new_name, msg.roomid)
-                self.sendTextMsg(result, msg.roomid)
-                return
-
-            if msg.is_at(self.wxid):  # 被@
-                # 决斗功能特殊处理 - 直接检测关键词
-                if "决斗" in msg.content:
-                    self.LOG.info(f"群聊中检测到可能的决斗请求: {msg.content}")
-                    # 尝试提取对手名称
-                    duel_match = re.search(r"决斗.*?@([^\s]+)", msg.content)
-                    if duel_match:
-                        opponent_name = duel_match.group(1)
-                        self.LOG.info(f"直接匹配到的决斗对手名称: {opponent_name}")
-                        # 寻找群内对应的成员
-                        room_members = self.wcf.get_chatroom_members(msg.roomid)
-                        opponent_wxid = None
-                        for member_wxid, member_name in room_members.items():
-                            if opponent_name in member_name:
-                                opponent_wxid = member_wxid
-                                break
-                        
-                        if opponent_wxid:
-                            # 获取挑战者昵称
-                            challenger_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
-                            
-                            # 检查并启动决斗线程
-                            if not self.start_duel_thread(challenger_name, opponent_name, msg.roomid, True):
-                                self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.roomid)
-                                return True
-                            
-                            return True
-                
-                # 常规@处理
-                self.toAt(msg)
-
-            else:  # 其他消息
-                self.toChengyu(msg)
-
-            return  # 处理完群聊信息，后面就不需要处理了
-
-        # 非群聊信息，按消息类型进行处理
-        if msg.type == 37:  # 好友请求
-            self.autoAcceptFriendRequest(msg)
-
-        elif msg.type == 10000:  # 系统信息
-            self.sayHiToNewFriend(msg)
-
-        elif msg.type == 0x01:
-            if msg.from_self():
-                if msg.content == "^更新$":
-                    self.config.reload()
-                    self.LOG.info("已更新")
-            else:
-                # 私聊改名处理
+                # 改名命令处理
                 change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
                 if change_name_match:
                     old_name = change_name_match.group(1)
                     new_name = change_name_match.group(2)
                     
                     from base.func_duel import change_player_name
-                    result = change_player_name(old_name, new_name)  # 私聊不传群ID
-                    self.sendTextMsg(result, msg.sender)
+                    result = change_player_name(old_name, new_name, msg.roomid)
+                    self.sendTextMsg(result, msg.roomid)
                     return
 
-                # 决斗功能处理（私聊）
-                duel_match = re.search(r"^决斗\s*(?:@|[与和])\s*([^\s]+)$", msg.content)
-                if duel_match:
-                    opponent_name = duel_match.group(1)
-                    # 获取发送者昵称
-                    sender_name = self.allContacts.get(msg.sender, "挑战者")
-                    
-                    # 检查并启动决斗线程
-                    if not self.start_duel_thread(sender_name, opponent_name, msg.sender, False):
-                        self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.sender)
-                        return True
-                    
-                    return True
+                if msg.is_at(self.wxid):  # 被@
+                    # 决斗功能特殊处理 - 直接检测关键词
+                    if "决斗" in msg.content:
+                        self.LOG.info(f"群聊中检测到可能的决斗请求: {msg.content}")
+                        # 尝试提取对手名称
+                        duel_match = re.search(r"决斗.*?@([^\s]+)", msg.content)
+                        if duel_match:
+                            opponent_name = duel_match.group(1)
+                            self.LOG.info(f"直接匹配到的决斗对手名称: {opponent_name}")
+                            # 寻找群内对应的成员
+                            room_members = self.wcf.get_chatroom_members(msg.roomid)
+                            opponent_wxid = None
+                            for member_wxid, member_name in room_members.items():
+                                if opponent_name in member_name:
+                                    opponent_wxid = member_wxid
+                                    break
+                            
+                            if opponent_wxid:
+                                # 获取挑战者昵称
+                                challenger_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+                                
+                                # 检查并启动决斗线程
+                                if not self.start_duel_thread(challenger_name, opponent_name, msg.roomid, True):
+                                    self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.roomid)
+                                    return True
+                                
+                                return True
                 
-                # 决斗排行榜查询
-                if msg.content == "决斗排行" or msg.content == "决斗排名" or msg.content == "排行榜":
-                    rank_list = get_rank_list(10)  # 私聊不传群ID
-                    self.sendTextMsg(rank_list, msg.sender)
-                    return
-                
-                # 个人战绩查询
-                stats_match = re.search(r"^(决斗战绩|我的战绩|战绩查询)(.*)$", msg.content)
-                if stats_match:
-                    player_name = stats_match.group(2).strip()
-                    if not player_name:  # 如果没有指定名字，则查询发送者
-                        player_name = self.allContacts.get(msg.sender, "未知用户")
-                    
-                    stats = get_player_stats(player_name)  # 私聊不传群ID
-                    self.sendTextMsg(stats, msg.sender)
-                    return
-                
-                # 帮助信息查询
-                if msg.content.startswith("info") or msg.content == "帮助" or msg.content == "指令":
-                    help_info = self.get_bot_help_info()
-                    self.sendTextMsg(help_info, msg.sender)
-                    return
-                
-                # 阿里文生图触发词处理
-                aliyun_trigger = self.config.ALIYUN_IMAGE.get('trigger_keyword', '牛阿里') if hasattr(self.config, 'ALIYUN_IMAGE') else '牛阿里'
-                if msg.content.startswith(aliyun_trigger):
-                    prompt = msg.content[len(aliyun_trigger):].strip()
-                    if prompt:
-                        result = self.handle_image_generation('aliyun', prompt, msg.sender)
-                        if result:
+                    # 常规@处理
+                    self.toAt(msg)
+
+                else:  # 其他消息
+                    self.toChengyu(msg)
+
+                return  # 处理完群聊信息，后面就不需要处理了
+
+            # 非群聊信息，按消息类型进行处理
+            if msg.type == 37:  # 好友请求
+                self.autoAcceptFriendRequest(msg)
+
+            elif msg.type == 10000:  # 系统信息
+                self.sayHiToNewFriend(msg)
+
+            elif msg.type == 0x01:
+                if msg.from_self():
+                    if msg.content == "^更新$":
+                        self.config.reload()
+                        self.LOG.info("已更新")
+                else:
+                    # 私聊改名处理
+                    change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
+                    if change_name_match:
+                        old_name = change_name_match.group(1)
+                        new_name = change_name_match.group(2)
+                        
+                        from base.func_duel import change_player_name
+                        result = change_player_name(old_name, new_name)  # 私聊不传群ID
+                        self.sendTextMsg(result, msg.sender)
+                        return
+
+                    # 决斗功能处理（私聊）
+                    duel_match = re.search(r"^决斗\s*(?:@|[与和])\s*([^\s]+)$", msg.content)
+                    if duel_match:
+                        opponent_name = duel_match.group(1)
+                        # 获取发送者昵称
+                        sender_name = self.allContacts.get(msg.sender, "挑战者")
+                        
+                        # 检查并启动决斗线程
+                        if not self.start_duel_thread(sender_name, opponent_name, msg.sender, False):
+                            self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.sender)
                             return
-                
-                # CogView触发词处理
-                cogview_trigger = self.config.COGVIEW.get('trigger_keyword', '牛智谱') if hasattr(self.config, 'COGVIEW') else '牛智谱'
-                if msg.content.startswith(cogview_trigger):
-                    prompt = msg.content[len(cogview_trigger):].strip()
-                    if prompt:
-                        result = self.handle_image_generation('cogview', prompt, msg.sender)
-                        if result:
-                            return
-                
-                # 谷歌AI画图触发词处理
-                gemini_trigger = self.config.GEMINI_IMAGE.get('trigger_keyword', '牛谷歌') if hasattr(self.config, 'GEMINI_IMAGE') else '牛谷歌'
-                if msg.content.startswith(gemini_trigger):
-                    prompt = msg.content[len(gemini_trigger):].strip()
-                    if prompt:
-                        result = self.handle_image_generation('gemini', prompt, msg.sender)
-                        if result:
-                            return
-                
-                # Perplexity触发词处理
-                perplexity_trigger = self.config.PERPLEXITY.get('trigger_keyword', 'ask') if hasattr(self.config, 'PERPLEXITY') else 'ask'
-                if msg.content.startswith(perplexity_trigger):
-                    prompt = msg.content[len(perplexity_trigger):].strip()
-                    if prompt:
-                        # 获取Perplexity实例
-                        if not hasattr(self, 'perplexity'):
-                            if hasattr(self.config, 'PERPLEXITY') and Perplexity.value_check(self.config.PERPLEXITY):
-                                self.perplexity = Perplexity(self.config.PERPLEXITY)
+                        
+                        return
+                    
+                    # 决斗排行榜查询
+                    if msg.content == "决斗排行" or msg.content == "决斗排名" or msg.content == "排行榜":
+                        rank_list = get_rank_list(10)  # 私聊不传群ID
+                        self.sendTextMsg(rank_list, msg.sender)
+                        return
+                    
+                    # 个人战绩查询
+                    stats_match = re.search(r"^(决斗战绩|我的战绩|战绩查询)(.*)$", msg.content)
+                    if stats_match:
+                        player_name = stats_match.group(2).strip()
+                        if not player_name:  # 如果没有指定名字，则查询发送者
+                            player_name = self.allContacts.get(msg.sender, "未知用户")
+                        
+                        stats = get_player_stats(player_name)  # 私聊不传群ID
+                        self.sendTextMsg(stats, msg.sender)
+                        return
+                    
+                    # 帮助信息查询
+                    if msg.content.startswith("info") or msg.content == "帮助" or msg.content == "指令":
+                        help_info = self.get_bot_help_info()
+                        self.sendTextMsg(help_info, msg.sender)
+                        return
+                    
+                    # 阿里文生图触发词处理
+                    aliyun_trigger = self.config.ALIYUN_IMAGE.get('trigger_keyword', '牛阿里') if hasattr(self.config, 'ALIYUN_IMAGE') else '牛阿里'
+                    if msg.content.startswith(aliyun_trigger):
+                        prompt = msg.content[len(aliyun_trigger):].strip()
+                        if prompt:
+                            result = self.handle_image_generation('aliyun', prompt, msg.sender)
+                            if result:
+                                return
+                    
+                    # CogView触发词处理
+                    cogview_trigger = self.config.COGVIEW.get('trigger_keyword', '牛智谱') if hasattr(self.config, 'COGVIEW') else '牛智谱'
+                    if msg.content.startswith(cogview_trigger):
+                        prompt = msg.content[len(cogview_trigger):].strip()
+                        if prompt:
+                            result = self.handle_image_generation('cogview', prompt, msg.sender)
+                            if result:
+                                return
+                    
+                    # 谷歌AI画图触发词处理
+                    gemini_trigger = self.config.GEMINI_IMAGE.get('trigger_keyword', '牛谷歌') if hasattr(self.config, 'GEMINI_IMAGE') else '牛谷歌'
+                    if msg.content.startswith(gemini_trigger):
+                        prompt = msg.content[len(gemini_trigger):].strip()
+                        if prompt:
+                            result = self.handle_image_generation('gemini', prompt, msg.sender)
+                            if result:
+                                return
+                    
+                    # Perplexity触发词处理
+                    perplexity_trigger = self.config.PERPLEXITY.get('trigger_keyword', 'ask') if hasattr(self.config, 'PERPLEXITY') else 'ask'
+                    if msg.content.startswith(perplexity_trigger):
+                        prompt = msg.content[len(perplexity_trigger):].strip()
+                        if prompt:
+                            # 获取Perplexity实例
+                            if not hasattr(self, 'perplexity'):
+                                if hasattr(self.config, 'PERPLEXITY') and Perplexity.value_check(self.config.PERPLEXITY):
+                                    self.perplexity = Perplexity(self.config.PERPLEXITY)
+                                else:
+                                    self.sendTextMsg("Perplexity服务未配置", msg.sender)
+                                    return
+                            
+                            # 使用现有的chat实例如果它是Perplexity
+                            perplexity_instance = self.perplexity if hasattr(self, 'perplexity') else (self.chat if isinstance(self.chat, Perplexity) else None)
+                            
+                            if perplexity_instance:
+                                self.sendTextMsg("正在查询Perplexity，请稍候...", msg.sender)
+                                response = perplexity_instance.get_answer(prompt, msg.sender)
+                                if response:
+                                    self.sendTextMsg(response, msg.sender)
+                                    return
+                                else:
+                                    self.sendTextMsg("无法从Perplexity获取回答", msg.sender)
+                                    return
                             else:
                                 self.sendTextMsg("Perplexity服务未配置", msg.sender)
                                 return
-                        
-                        # 使用现有的chat实例如果它是Perplexity
-                        perplexity_instance = self.perplexity if hasattr(self, 'perplexity') else (self.chat if isinstance(self.chat, Perplexity) else None)
-                        
-                        if perplexity_instance:
-                            self.sendTextMsg("正在查询Perplexity，请稍候...", msg.sender)
-                            response = perplexity_instance.get_answer(prompt, msg.sender)
-                            if response:
-                                self.sendTextMsg(response, msg.sender)
-                                return
-                            else:
-                                self.sendTextMsg("无法从Perplexity获取回答", msg.sender)
-                                return
                         else:
-                            self.sendTextMsg("Perplexity服务未配置", msg.sender)
+                            self.sendTextMsg(f"请在{perplexity_trigger}后面添加您的问题", msg.sender)
                             return
-                    else:
-                        self.sendTextMsg(f"请在{perplexity_trigger}后面添加您的问题", msg.sender)
-                        return
 
-                self.toChitchat(msg)  # 闲聊
+                    self.toChitchat(msg)  # 闲聊
+
+        except Exception as e:
+            self.LOG.error(f"处理消息时发生错误: {e}")
+
+    def _record_message(self, msg: WxMsg) -> None:
+        """记录消息到历史记录
+        
+        Args:
+            msg: 微信消息
+        """
+        # 跳过特定类型的消息
+        if msg.type != 0x01:  # 只记录文本消息
+            return
+            
+        # 跳过自己发送的消息
+        if msg.from_self():
+            return
+            
+        with self._msg_history_lock:
+            # 获取接收者ID（群ID或用户ID）
+            chat_id = msg.roomid if msg.from_group() else msg.sender
+            
+            # 如果该聊天没有历史记录，创建一个新的队列
+            if chat_id not in self._msg_history:
+                self._msg_history[chat_id] = deque(maxlen=200)
+                
+            # 获取发送者昵称
+            if msg.from_group():
+                sender_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+            else:
+                sender_name = self.allContacts.get(msg.sender, msg.sender)
+                
+            # 记录消息，包含发送者昵称和内容
+            self._msg_history[chat_id].append({
+                "sender": sender_name,
+                "content": msg.content,
+                "time": time.strftime("%H:%M", time.localtime())
+            })
+    
+    def _summarize_messages(self, chat_id: str) -> str:
+        """生成消息总结
+        
+        Args:
+            chat_id: 聊天ID（群ID或用户ID）
+            
+        Returns:
+            str: 消息总结
+        """
+        with self._msg_history_lock:
+            if chat_id not in self._msg_history or not self._msg_history[chat_id]:
+                return "没有可以总结的历史消息。"
+                
+            # 复制历史消息，以防在处理过程中有变动
+            messages = list(self._msg_history[chat_id])
+            
+        # 如果没有消息模型，返回基本总结
+        if not self.chat:
+            return self._basic_summarize(messages)
+            
+        # 使用AI模型生成总结
+        return self._ai_summarize(messages, chat_id)
+    
+    def _basic_summarize(self, messages: list) -> str:
+        """基本的消息总结逻辑，不使用AI
+        
+        Args:
+            messages: 消息列表
+            
+        Returns:
+            str: 消息总结
+        """
+        if not messages:
+            return "没有可以总结的历史消息。"
+            
+        # 统计每个发送者的消息数量
+        sender_counts = {}
+        for msg in messages:
+            sender = msg["sender"]
+            if sender not in sender_counts:
+                sender_counts[sender] = 0
+            sender_counts[sender] += 1
+            
+        # 生成总结
+        summary_lines = ["📋 最近消息总结："]
+        summary_lines.append(f"总共有 {len(messages)} 条消息")
+        summary_lines.append("\n发言统计：")
+        
+        for sender, count in sorted(sender_counts.items(), key=lambda x: x[1], reverse=True):
+            summary_lines.append(f"- {sender}: {count}条消息")
+            
+        # 添加最近的几条消息作为示例
+        recent_msgs = messages[-5:]  # 最近5条
+        summary_lines.append("\n最近消息示例：")
+        for msg in recent_msgs:
+            summary_lines.append(f"[{msg['time']}] {msg['sender']}: {msg['content'][:30]}...")
+            
+        return "\n".join(summary_lines)
+    
+    def _ai_summarize(self, messages: list, chat_id: str) -> str:
+        """使用AI模型生成消息总结
+        
+        Args:
+            messages: 消息列表
+            chat_id: 聊天ID
+            
+        Returns:
+            str: 消息总结
+        """
+        if not messages:
+            return "没有可以总结的历史消息。"
+            
+        # 构建用于AI总结的消息格式
+        formatted_msgs = []
+        for msg in messages:
+            formatted_msgs.append(f"[{msg['time']}] {msg['sender']}: {msg['content']}")
+        
+        # 构建提示词
+        prompt = (
+            "请总结以下消息记录的主要内容。这是一个微信群的对话历史。"
+            "请分析以下几个方面：\n"
+            "1. 主要参与者是谁\n"
+            "2. 核心讨论了哪些话题\n"
+            "3. 对话中的重点或结论\n\n"
+            "消息记录如下：\n\n" + "\n".join(formatted_msgs)
+        )
+        
+        # 使用AI模型生成总结
+        try:
+            summary = self.chat.get_answer(prompt, chat_id)
+            if not summary:
+                return self._basic_summarize(messages)
+                
+            return "📋 消息总结：\n\n" + summary
+        except Exception as e:
+            self.LOG.error(f"使用AI生成总结失败: {e}")
+            return self._basic_summarize(messages)
 
     def onMsg(self, msg: WxMsg) -> int:
         try:
