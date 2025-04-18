@@ -281,12 +281,49 @@ class Robot(Job):
             "【群聊工具】",
             "▶️ @泡泡 summary/总结 - 总结最近的聊天记录",
             "▶️ @泡泡 clearmessages/清除历史 - 清除消息历史记录",
+            "▶️ @泡泡 reset/重置 - 重置聊天记忆，开始新对话",
             "",
             "【其他】",
             "▶️ info/帮助/指令 - 显示此帮助信息",
             "▶️ 直接@机器人 - 进行对话"
         ]
         return "\n".join(help_text)
+
+    def _reset_chat_memory(self, chat_id: str) -> bool:
+        """重置AI聊天模型的记忆/上下文
+        
+        Args:
+            chat_id: 聊天ID（群ID或用户ID）
+            
+        Returns:
+            bool: 是否成功重置
+        """
+        try:
+            if not self.chat:
+                return False
+                
+            # 针对不同类型的AI模型调用相应的重置方法
+            if hasattr(self.chat, 'reset_conversation') and callable(getattr(self.chat, 'reset_conversation')):
+                # ChatGPT等模型可能有reset_conversation方法
+                self.chat.reset_conversation(chat_id)
+                return True
+            elif hasattr(self.chat, 'clear_context') and callable(getattr(self.chat, 'clear_context')):
+                # 一些模型可能有clear_context方法
+                self.chat.clear_context(chat_id)
+                return True
+            elif hasattr(self.chat, 'sessions') and isinstance(self.chat.sessions, dict):
+                # 一些模型可能直接在sessions字典中存储会话
+                if chat_id in self.chat.sessions:
+                    del self.chat.sessions[chat_id]
+                return True
+            else:
+                # 尝试一种通用方法：发送一个特殊请求来重置上下文
+                self.chat.get_answer("请重置我们的对话上下文，从现在开始是一个全新的对话。请仅回复：已重置。", chat_id)
+                return True
+                
+        except Exception as e:
+            self.LOG.error(f"重置聊天记忆失败: {e}")
+            return False
 
     def toAt(self, msg: WxMsg) -> bool:
         """处理被 @ 消息
@@ -303,6 +340,26 @@ class Robot(Job):
         perplexity_trigger = self.config.PERPLEXITY.get('trigger_keyword', 'ask') if hasattr(self.config, 'PERPLEXITY') else 'ask'
         
         content = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
+        
+        # 处理重置聊天记忆命令
+        if content.lower() == "reset" or content == "重置" or content == "重置记忆":
+            self.LOG.info(f"收到重置聊天记忆请求: {msg.content}")
+            # 获取聊天ID
+            chat_id = msg.roomid if msg.from_group() else msg.sender
+            
+            # 重置聊天记忆
+            if self._reset_chat_memory(chat_id):
+                if msg.from_group():
+                    self.sendTextMsg("✅ 已重置与本群的聊天记忆", msg.roomid, msg.sender)
+                else:
+                    self.sendTextMsg("✅ 已重置与您的聊天记忆", msg.sender)
+            else:
+                if msg.from_group():
+                    self.sendTextMsg("⚠️ 重置聊天记忆失败，可能是当前模型不支持此操作", msg.roomid, msg.sender)
+                else:
+                    self.sendTextMsg("⚠️ 重置聊天记忆失败，可能是当前模型不支持此操作", msg.sender)
+                    
+            return True
         
         # 处理消息总结命令
         if content.lower() == "summary" or content == "总结":
@@ -749,7 +806,7 @@ class Robot(Job):
             
             # 如果该聊天没有历史记录，创建一个新的队列
             if chat_id not in self._msg_history:
-                self._msg_history[chat_id] = deque(maxlen=300)
+                self._msg_history[chat_id] = deque(maxlen=500)
                 
             # 获取发送者昵称
             if msg.from_group():
@@ -860,8 +917,9 @@ class Robot(Job):
         prompt = (
             "下面是一组聊天消息记录。请提供一个客观的总结，包括：\n"
             "- 主要参与者\n"
+            "- 讨论的主要话题\n"
             "- 关键信息和要点\n\n"
-            "请直接给出详细的总结内容，但是字数尽量少，不要添加额外的评论或人格色彩。\n\n"
+            "请直接给出总结内容，不要添加额外的评论或人格色彩。\n\n"
             "消息记录:\n" + "\n".join(formatted_msgs)
         )
         
