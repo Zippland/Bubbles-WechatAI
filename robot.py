@@ -25,7 +25,7 @@ from base.func_weather import Weather
 from base.func_news import News
 from base.func_tigerbot import TigerBot
 from base.func_xinghuo_web import XinghuoWeb
-from base.func_duel import start_duel, get_rank_list, get_player_stats
+from base.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name
 from configuration import Config
 from constants import ChatType
 from job_mgmt import Job
@@ -294,6 +294,22 @@ class Robot(Job):
         
         content = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
         
+        # 改名命令处理 - 添加到toAt方法中处理被@的情况
+        change_name_match = re.search(r"改名\s+([^\s]+)\s+([^\s]+)", msg.content)
+        if change_name_match:
+            self.LOG.info(f"检测到改名请求: {msg.content}")
+            # 只支持"改名 旧名 新名"格式
+            old_name = change_name_match.group(1)
+            new_name = change_name_match.group(2)
+            self.LOG.info(f"匹配到改名格式: 旧名={old_name}, 新名={new_name}")
+            
+            # 确保有新名字和旧名字
+            if old_name and new_name:
+                from base.func_duel import change_player_name
+                result = change_player_name(old_name, new_name, msg.roomid)
+                self.sendTextMsg(result, msg.roomid, msg.sender)
+                return True
+        
         # 决斗功能处理 - 优化正则匹配
         duel_match = re.search(r"决斗.*?(?:@|[与和]).*?([^\s@]+)", content)
         self.LOG.info(f"决斗检测 - 原始内容: {msg.content}, 处理后内容: {content}, 匹配结果: {duel_match}")
@@ -478,6 +494,17 @@ class Robot(Job):
             if msg.roomid not in self.config.GROUPS:  # 不在配置的响应的群列表里，忽略
                 return
 
+            # 改名命令处理
+            change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
+            if change_name_match:
+                old_name = change_name_match.group(1)
+                new_name = change_name_match.group(2)
+                
+                from base.func_duel import change_player_name
+                result = change_player_name(old_name, new_name, msg.roomid)
+                self.sendTextMsg(result, msg.roomid)
+                return
+
             if msg.is_at(self.wxid):  # 被@
                 # 决斗功能特殊处理 - 直接检测关键词
                 if "决斗" in msg.content:
@@ -527,6 +554,17 @@ class Robot(Job):
                     self.config.reload()
                     self.LOG.info("已更新")
             else:
+                # 私聊改名处理
+                change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
+                if change_name_match:
+                    old_name = change_name_match.group(1)
+                    new_name = change_name_match.group(2)
+                    
+                    from base.func_duel import change_player_name
+                    result = change_player_name(old_name, new_name)  # 私聊不传群ID
+                    self.sendTextMsg(result, msg.sender)
+                    return
+
                 # 决斗功能处理（私聊）
                 duel_match = re.search(r"^决斗\s*(?:@|[与和])\s*([^\s]+)$", msg.content)
                 if duel_match:
@@ -731,8 +769,9 @@ class Robot(Job):
         for r in receivers:
             self.sendTextMsg(news, r)
 
-    def weatherReport(self) -> None:
-        receivers = self.config.WEATHER
+    def weatherReport(self, receivers: list = None) -> None:
+        if receivers is None:
+            receivers = self.config.WEATHER
         if not receivers or not self.config.CITY_CODE:
             self.LOG.warning("未配置天气城市代码或接收人")
             return

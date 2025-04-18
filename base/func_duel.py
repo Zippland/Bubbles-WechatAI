@@ -90,13 +90,13 @@ class DuelRankSystem:
         loser_data = self.get_player_data(loser)
         
         # 基础积分计算 - 回合数越少积分越高
-        base_points = 50
+        base_points = 100
         if rounds <= 5:  # 速战速决
-            base_points = 50
+            base_points = 100
         elif rounds <= 10:
-            base_points = 30
+            base_points = 60
         elif rounds >= 15:  # 长时间战斗
-            base_points = 20
+            base_points = 40
             
         # 计算总积分变化（剩余生命值作为百分比加成）
         hp_percent_bonus = winner_hp / 100.0  # 血量百分比
@@ -169,6 +169,44 @@ class DuelRankSystem:
                 return i + 1, player_data  # 排名从1开始
                 
         return None, player_data  # 理论上不会到这里
+    
+    def change_player_name(self, old_name: str, new_name: str) -> bool:
+        """更改玩家名称，保留历史战绩
+        
+        Args:
+            old_name: 旧名称
+            new_name: 新名称
+            
+        Returns:
+            bool: 是否成功更改
+        """
+        group_data = self.ranks["groups"][self.group_id]
+        players = group_data["players"]
+        
+        # 检查旧名称是否存在
+        if old_name not in players:
+            return False
+            
+        # 检查新名称是否已存在
+        if new_name in players:
+            return False
+            
+        # 复制玩家数据到新名称
+        players[new_name] = players[old_name].copy()
+        
+        # 删除旧名称数据
+        del players[old_name]
+        
+        # 更新历史记录中的名称
+        for record in group_data["history"]:
+            if record["winner"] == old_name:
+                record["winner"] = new_name
+            if record["loser"] == old_name:
+                record["loser"] = new_name
+        
+        # 保存更改
+        self._save_ranks()
+        return True
 
 class HarryPotterDuel:
     """决斗功能"""
@@ -403,3 +441,28 @@ def get_player_stats(player_name: str, group_id=None) -> str:
     except Exception as e:
         logging.error(f"获取玩家战绩失败: {e}")
         return f"获取玩家战绩失败: {e}"
+
+def change_player_name(old_name: str, new_name: str, group_id=None) -> str:
+    """更改玩家名称
+    
+    Args:
+        old_name: 旧名称
+        new_name: 新名称
+        group_id: 群组ID，默认为None表示私聊
+        
+    Returns:
+        str: 操作结果消息
+    """
+    try:
+        rank_system = DuelRankSystem(group_id)
+        result = rank_system.change_player_name(old_name, new_name)
+        
+        location_text = "私聊" if group_id is None else "本群"
+        
+        if result:
+            return f"✅ 已成功将{location_text}中的玩家 \"{old_name}\" 改名为 \"{new_name}\"，历史战绩已保留"
+        else:
+            return f"❌ 改名失败：请确认 \"{old_name}\" 在{location_text}中有战绩记录，且 \"{new_name}\" 名称未被使用"
+    except Exception as e:
+        logging.error(f"更改玩家名称失败: {e}")
+        return f"❌ 更改玩家名称失败: {e}"
