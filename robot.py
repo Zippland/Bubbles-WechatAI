@@ -269,9 +269,9 @@ class Robot(Job):
             "",
             "【决斗系统】",
             "▶️ 决斗@XX - 向某人发起决斗",
-            "▶️ 决斗排行/排行榜 - 查看决斗排行榜",
-            "▶️ 我的战绩/决斗战绩 - 查看自己的决斗战绩",
-            "▶️ 改名 旧名 新名 - 修改自己的昵称",
+            "▶️ 决斗排行/排行榜",
+            "▶️ 我的战绩/决斗战绩",
+            "▶️ 改名 旧名 新名 - 更新昵称",
             "",
             "",
             "【成语】",
@@ -279,51 +279,15 @@ class Robot(Job):
             "▶️ ?成语 - 查询成语释义",
             "",
             "【群聊工具】",
-            "▶️ @泡泡 summary/总结 - 总结最近的聊天记录",
-            "▶️ @泡泡 clearmessages/清除历史 - 清除消息历史记录",
-            "▶️ @泡泡 reset/重置 - 重置聊天记忆，开始新对话",
+            "▶️ summary/总结",
+            "▶️ clearmessages/清除历史",
+            "▶️ reset/重置",
             "",
             "【其他】",
-            "▶️ info/帮助/指令 - 显示此帮助信息",
-            "▶️ 直接@机器人 - 进行对话"
+            "▶️ info/帮助/指令",
+            "▶️ 直接@泡泡 - 进行对话"
         ]
         return "\n".join(help_text)
-
-    def _reset_chat_memory(self, chat_id: str) -> bool:
-        """重置AI聊天模型的记忆/上下文
-        
-        Args:
-            chat_id: 聊天ID（群ID或用户ID）
-            
-        Returns:
-            bool: 是否成功重置
-        """
-        try:
-            if not self.chat:
-                return False
-                
-            # 针对不同类型的AI模型调用相应的重置方法
-            if hasattr(self.chat, 'reset_conversation') and callable(getattr(self.chat, 'reset_conversation')):
-                # ChatGPT等模型可能有reset_conversation方法
-                self.chat.reset_conversation(chat_id)
-                return True
-            elif hasattr(self.chat, 'clear_context') and callable(getattr(self.chat, 'clear_context')):
-                # 一些模型可能有clear_context方法
-                self.chat.clear_context(chat_id)
-                return True
-            elif hasattr(self.chat, 'sessions') and isinstance(self.chat.sessions, dict):
-                # 一些模型可能直接在sessions字典中存储会话
-                if chat_id in self.chat.sessions:
-                    del self.chat.sessions[chat_id]
-                return True
-            else:
-                # 尝试一种通用方法：发送一个特殊请求来重置上下文
-                self.chat.get_answer("请重置我们的对话上下文，从现在开始是一个全新的对话。请仅回复：已重置。", chat_id)
-                return True
-                
-        except Exception as e:
-            self.LOG.error(f"重置聊天记忆失败: {e}")
-            return False
 
     def toAt(self, msg: WxMsg) -> bool:
         """处理被 @ 消息
@@ -341,24 +305,19 @@ class Robot(Job):
         
         content = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
         
-        # 处理重置聊天记忆命令
+        # 处理重置对话记忆命令
         if content.lower() == "reset" or content == "重置" or content == "重置记忆":
-            self.LOG.info(f"收到重置聊天记忆请求: {msg.content}")
-            # 获取聊天ID
+            self.LOG.info(f"收到重置对话记忆请求: {msg.content}")
             chat_id = msg.roomid if msg.from_group() else msg.sender
             
             # 重置聊天记忆
-            if self._reset_chat_memory(chat_id):
-                if msg.from_group():
-                    self.sendTextMsg("✅ 已重置与本群的聊天记忆", msg.roomid, msg.sender)
-                else:
-                    self.sendTextMsg("✅ 已重置与您的聊天记忆", msg.sender)
+            result = self._reset_chat_memory(chat_id)
+            
+            if msg.from_group():
+                self.sendTextMsg(result, msg.roomid, msg.sender)
             else:
-                if msg.from_group():
-                    self.sendTextMsg("⚠️ 重置聊天记忆失败，可能是当前模型不支持此操作", msg.roomid, msg.sender)
-                else:
-                    self.sendTextMsg("⚠️ 重置聊天记忆失败，可能是当前模型不支持此操作", msg.sender)
-                    
+                self.sendTextMsg(result, msg.sender)
+                
             return True
         
         # 处理消息总结命令
@@ -1121,3 +1080,64 @@ class Robot(Job):
             )
             self._duel_thread.start()
             return True
+
+    def _reset_chat_memory(self, chat_id: str) -> str:
+        """重置特定聊天的AI对话记忆
+        
+        Args:
+            chat_id: 聊天ID（群ID或用户ID）
+            
+        Returns:
+            str: 处理结果消息
+        """
+        if not self.chat:
+            return "⚠️ 未配置AI模型，无需重置"
+            
+        try:
+            # 检查并调用不同AI模型的清除记忆方法
+            if hasattr(self.chat, 'conversation_list') and chat_id in getattr(self.chat, 'conversation_list', {}):
+                # 判断是哪种类型的模型并执行相应的重置操作
+                if isinstance(self.chat, DeepSeek):
+                    # DeepSeek模型
+                    del self.chat.conversation_list[chat_id]
+                    self.LOG.info(f"已重置DeepSeek对话记忆: {chat_id}")
+                    return "✅ 已重置DeepSeek对话记忆，开始新的对话"
+                    
+                elif isinstance(self.chat, ChatGPT):
+                    # ChatGPT模型
+                    # 保留系统提示，删除其他历史
+                    if len(self.chat.conversation_list[chat_id]) > 0:
+                        system_msgs = [msg for msg in self.chat.conversation_list[chat_id] if msg["role"] == "system"]
+                        self.chat.conversation_list[chat_id] = system_msgs
+                        self.LOG.info(f"已重置ChatGPT对话记忆(保留系统提示): {chat_id}")
+                        return "✅ 已重置ChatGPT对话记忆，保留系统提示，开始新的对话"
+                        
+                elif isinstance(self.chat, ChatGLM):
+                    # ChatGLM模型
+                    if hasattr(self.chat, 'chat_type') and chat_id in self.chat.chat_type:
+                        chat_type = self.chat.chat_type[chat_id]
+                        # 保留系统提示，删除对话历史
+                        if chat_type in self.chat.conversation_list[chat_id]:
+                            self.chat.conversation_list[chat_id][chat_type] = []
+                            self.LOG.info(f"已重置ChatGLM对话记忆: {chat_id}")
+                            return "✅ 已重置ChatGLM对话记忆，开始新的对话"
+                    
+                elif isinstance(self.chat, Ollama):
+                    # Ollama模型
+                    if chat_id in self.chat.conversation_list:
+                        self.chat.conversation_list[chat_id] = []
+                        self.LOG.info(f"已重置Ollama对话记忆: {chat_id}")
+                        return "✅ 已重置Ollama对话记忆，开始新的对话"
+                
+                # 通用处理方式 - 直接删除对话记录
+                del self.chat.conversation_list[chat_id]
+                self.LOG.info(f"已重置{self.chat.__class__.__name__}对话记忆: {chat_id}")
+                return f"✅ 已重置{self.chat.__class__.__name__}对话记忆，开始新的对话"
+            
+            # 对于没有找到会话记录的情况
+            self.LOG.info(f"未找到{self.chat.__class__.__name__}对话记忆: {chat_id}")
+            return f"⚠️ 未找到与{self.chat.__class__.__name__}的对话记忆，无需重置"
+            
+        except Exception as e:
+            self.LOG.error(f"重置对话记忆失败: {e}")
+            return f"❌ 重置对话记忆失败: {e}"
