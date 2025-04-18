@@ -749,7 +749,7 @@ class Robot(Job):
             
             # 如果该聊天没有历史记录，创建一个新的队列
             if chat_id not in self._msg_history:
-                self._msg_history[chat_id] = deque(maxlen=500)
+                self._msg_history[chat_id] = deque(maxlen=300)
                 
             # 获取发送者昵称
             if msg.from_group():
@@ -860,9 +860,8 @@ class Robot(Job):
         prompt = (
             "下面是一组聊天消息记录。请提供一个客观的总结，包括：\n"
             "- 主要参与者\n"
-            "- 讨论的主要话题\n"
             "- 关键信息和要点\n\n"
-            "请直接给出总结内容，不要添加额外的评论或人格色彩。\n\n"
+            "请直接给出详细的总结内容，但是字数尽量少，不要添加额外的评论或人格色彩。\n\n"
             "消息记录:\n" + "\n".join(formatted_msgs)
         )
         
