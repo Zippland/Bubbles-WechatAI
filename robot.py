@@ -494,7 +494,7 @@ class Robot(Job):
                             return True
                     
                     # 发送等待消息
-                    self.sendTextMsg("正在查询Perplexity，请稍候...", receiver, at_user)
+                    self.sendTextMsg("正在使用Perplexity进行深度研究，请稍候...", receiver, at_user)
                     
                     # 创建并启动新线程处理请求
                     perplexity_thread = PerplexityThread(
@@ -1052,7 +1052,7 @@ class Robot(Job):
                                         return True
                                 
                                 # 发送等待消息
-                                self.sendTextMsg("正在查询Perplexity，请稍候...", receiver, at_user)
+                                self.sendTextMsg("正在使用Perplexity进行深度研究，请稍候...", receiver, at_user)
                                 
                                 # 创建并启动新线程处理请求
                                 perplexity_thread = PerplexityThread(
