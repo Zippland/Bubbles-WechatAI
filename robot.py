@@ -56,54 +56,110 @@ class Robot(Job):
         # 消息历史记录 - 存储最近的200条消息
         self._msg_history = {}  # 使用字典，以群ID或用户ID为键
         self._msg_history_lock = Lock()  # 添加锁以保证线程安全
-
-        if ChatType.is_in_chat_types(chat_type):
-            if chat_type == ChatType.TIGER_BOT.value and TigerBot.value_check(self.config.TIGERBOT):
-                self.chat = TigerBot(self.config.TIGERBOT)
-            elif chat_type == ChatType.CHATGPT.value and ChatGPT.value_check(self.config.CHATGPT):
-                self.chat = ChatGPT(self.config.CHATGPT)
-            elif chat_type == ChatType.XINGHUO_WEB.value and XinghuoWeb.value_check(self.config.XINGHUO_WEB):
-                self.chat = XinghuoWeb(self.config.XINGHUO_WEB)
-            elif chat_type == ChatType.CHATGLM.value and ChatGLM.value_check(self.config.CHATGLM):
-                self.chat = ChatGLM(self.config.CHATGLM)
-            elif chat_type == ChatType.BardAssistant.value and BardAssistant.value_check(self.config.BardAssistant):
-                self.chat = BardAssistant(self.config.BardAssistant)
-            elif chat_type == ChatType.ZhiPu.value and ZhiPu.value_check(self.config.ZhiPu):
-                self.chat = ZhiPu(self.config.ZhiPu)
-            elif chat_type == ChatType.OLLAMA.value and Ollama.value_check(self.config.OLLAMA):
-                self.chat = Ollama(self.config.OLLAMA)
-            elif chat_type == ChatType.DEEPSEEK.value and DeepSeek.value_check(self.config.DEEPSEEK):
-                self.chat = DeepSeek(self.config.DEEPSEEK)
-            elif chat_type == ChatType.PERPLEXITY.value and Perplexity.value_check(self.config.PERPLEXITY):
-                self.chat = Perplexity(self.config.PERPLEXITY)
-            else:
-                self.LOG.warning("未配置模型")
-                self.chat = None
+        
+        # 初始化所有可能需要的AI模型实例
+        self.chat_models = {}
+        self.LOG.info("开始初始化各种AI模型...")
+        
+        # 初始化TigerBot
+        if TigerBot.value_check(self.config.TIGERBOT):
+            self.chat_models[ChatType.TIGER_BOT.value] = TigerBot(self.config.TIGERBOT)
+            self.LOG.info(f"已加载 TigerBot 模型")
+            
+        # 初始化ChatGPT
+        if ChatGPT.value_check(self.config.CHATGPT):
+            self.chat_models[ChatType.CHATGPT.value] = ChatGPT(self.config.CHATGPT)
+            self.LOG.info(f"已加载 ChatGPT 模型")
+            
+        # 初始化讯飞星火
+        if XinghuoWeb.value_check(self.config.XINGHUO_WEB):
+            self.chat_models[ChatType.XINGHUO_WEB.value] = XinghuoWeb(self.config.XINGHUO_WEB)
+            self.LOG.info(f"已加载 讯飞星火 模型")
+            
+        # 初始化ChatGLM
+        if ChatGLM.value_check(self.config.CHATGLM):
+            try:
+                # 检查key是否有实际内容而不只是存在
+                if self.config.CHATGLM.get('key') and self.config.CHATGLM.get('key').strip():
+                    self.chat_models[ChatType.CHATGLM.value] = ChatGLM(self.config.CHATGLM)
+                    self.LOG.info(f"已加载 ChatGLM 模型")
+                else:
+                    self.LOG.warning("ChatGLM 配置中缺少有效的API密钥，跳过初始化")
+            except Exception as e:
+                self.LOG.error(f"初始化 ChatGLM 模型时出错: {str(e)}")
+            
+        # 初始化BardAssistant
+        if BardAssistant.value_check(self.config.BardAssistant):
+            self.chat_models[ChatType.BardAssistant.value] = BardAssistant(self.config.BardAssistant)
+            self.LOG.info(f"已加载 BardAssistant 模型")
+            
+        # 初始化ZhiPu
+        if ZhiPu.value_check(self.config.ZhiPu):
+            self.chat_models[ChatType.ZhiPu.value] = ZhiPu(self.config.ZhiPu)
+            self.LOG.info(f"已加载 智谱 模型")
+            
+        # 初始化Ollama
+        if Ollama.value_check(self.config.OLLAMA):
+            self.chat_models[ChatType.OLLAMA.value] = Ollama(self.config.OLLAMA)
+            self.LOG.info(f"已加载 Ollama 模型")
+            
+        # 初始化DeepSeek
+        if DeepSeek.value_check(self.config.DEEPSEEK):
+            self.chat_models[ChatType.DEEPSEEK.value] = DeepSeek(self.config.DEEPSEEK)
+            self.LOG.info(f"已加载 DeepSeek 模型")
+            
+        # 初始化Perplexity
+        if Perplexity.value_check(self.config.PERPLEXITY):
+            self.chat_models[ChatType.PERPLEXITY.value] = Perplexity(self.config.PERPLEXITY)
+            self.perplexity = self.chat_models[ChatType.PERPLEXITY.value]  # 单独保存一个引用用于特殊处理
+            self.LOG.info(f"已加载 Perplexity 模型")
+            
+        # 根据chat_type参数选择默认模型
+        if chat_type > 0 and chat_type in self.chat_models:
+            self.chat = self.chat_models[chat_type]
+            self.default_model_id = chat_type
         else:
-            if TigerBot.value_check(self.config.TIGERBOT):
-                self.chat = TigerBot(self.config.TIGERBOT)
-            elif ChatGPT.value_check(self.config.CHATGPT):
-                self.chat = ChatGPT(self.config.CHATGPT)
-            elif Ollama.value_check(self.config.OLLAMA):
-                self.chat = Ollama(self.config.OLLAMA)
-            elif XinghuoWeb.value_check(self.config.XINGHUO_WEB):
-                self.chat = XinghuoWeb(self.config.XINGHUO_WEB)
-            elif ChatGLM.value_check(self.config.CHATGLM):
-                self.chat = ChatGLM(self.config.CHATGLM)
-            elif BardAssistant.value_check(self.config.BardAssistant):
-                self.chat = BardAssistant(self.config.BardAssistant)
-            elif ZhiPu.value_check(self.config.ZhiPu):
-                self.chat = ZhiPu(self.config.ZhiPu)
-            elif DeepSeek.value_check(self.config.DEEPSEEK):
-                self.chat = DeepSeek(self.config.DEEPSEEK)
-            elif Perplexity.value_check(self.config.PERPLEXITY):
-                self.chat = Perplexity(self.config.PERPLEXITY)
+            # 如果没有指定chat_type或指定的模型不可用，尝试使用配置文件中指定的默认模型
+            self.default_model_id = self.config.GROUP_MODELS.get('default', 0)
+            if self.default_model_id in self.chat_models:
+                self.chat = self.chat_models[self.default_model_id]
+            elif self.chat_models:  # 如果有任何可用模型，使用第一个
+                self.default_model_id = list(self.chat_models.keys())[0]
+                self.chat = self.chat_models[self.default_model_id]
             else:
-                self.LOG.warning("未配置模型")
+                self.LOG.warning("未配置任何可用的模型")
                 self.chat = None
+                self.default_model_id = 0
 
-        self.LOG.info(f"已选择: {self.chat}")
-
+        self.LOG.info(f"默认模型: {self.chat}，模型ID: {self.default_model_id}")
+        
+        # 显示群组-模型映射信息
+        if hasattr(self.config, 'GROUP_MODELS'):
+            # 显示群聊映射信息
+            if self.config.GROUP_MODELS.get('mapping'):
+                self.LOG.info("群聊-模型映射配置:")
+                for mapping in self.config.GROUP_MODELS.get('mapping', []):
+                    room_id = mapping.get('room_id', '')
+                    model_id = mapping.get('model', 0)
+                    if room_id and model_id in self.chat_models:
+                        model_name = self.chat_models[model_id].__class__.__name__
+                        self.LOG.info(f"  群聊 {room_id} -> 模型 {model_name}(ID:{model_id})")
+                    elif room_id:
+                        self.LOG.warning(f"  群聊 {room_id} 配置的模型ID {model_id} 不可用")
+            
+            # 显示私聊映射信息
+            if self.config.GROUP_MODELS.get('private_mapping'):
+                self.LOG.info("私聊-模型映射配置:")
+                for mapping in self.config.GROUP_MODELS.get('private_mapping', []):
+                    wxid = mapping.get('wxid', '')
+                    model_id = mapping.get('model', 0)
+                    if wxid and model_id in self.chat_models:
+                        model_name = self.chat_models[model_id].__class__.__name__
+                        contact_name = self.allContacts.get(wxid, wxid)
+                        self.LOG.info(f"  私聊用户 {contact_name}({wxid}) -> 模型 {model_name}(ID:{model_id})")
+                    elif wxid:
+                        self.LOG.warning(f"  私聊用户 {wxid} 配置的模型ID {model_id} 不可用")
+        
         # 初始化图像生成服务
         self.cogview = None
         self.aliyun_image = None
@@ -869,6 +925,9 @@ class Robot(Job):
             # 记录消息到历史记录
             self._record_message(msg)
             
+            # 根据消息来源选择使用的AI模型
+            self._select_model_for_message(msg)
+            
             # 群聊消息
             if msg.from_group():
                 # 检测新人加入群聊
@@ -1513,6 +1572,60 @@ class Robot(Job):
             # 清空线程字典
             self._perplexity_threads.clear()
             self.LOG.info("Perplexity线程管理已清理")
+
+    def _select_model_for_message(self, msg: WxMsg) -> None:
+        """根据消息来源选择对应的AI模型
+        :param msg: 接收到的消息
+        """
+        if not hasattr(self, 'chat_models') or not self.chat_models:
+            return  # 没有可用模型，无需切换
+            
+        # 获取消息来源ID
+        source_id = msg.roomid if msg.from_group() else msg.sender
+        
+        # 检查配置
+        if not hasattr(self.config, 'GROUP_MODELS'):
+            # 没有配置，使用默认模型
+            if self.default_model_id in self.chat_models:
+                self.chat = self.chat_models[self.default_model_id]
+            return
+            
+        # 群聊消息处理
+        if msg.from_group():
+            model_mappings = self.config.GROUP_MODELS.get('mapping', [])
+            for mapping in model_mappings:
+                if mapping.get('room_id') == source_id:
+                    model_id = mapping.get('model')
+                    if model_id in self.chat_models:
+                        # 切换到指定模型
+                        if self.chat != self.chat_models[model_id]:
+                            self.chat = self.chat_models[model_id]
+                            self.LOG.info(f"已为群 {source_id} 切换到模型: {self.chat.__class__.__name__}")
+                    else:
+                        self.LOG.warning(f"群 {source_id} 配置的模型ID {model_id} 不可用，使用默认模型")
+                        if self.default_model_id in self.chat_models:
+                            self.chat = self.chat_models[self.default_model_id]
+                    return
+        # 私聊消息处理
+        else:
+            private_mappings = self.config.GROUP_MODELS.get('private_mapping', [])
+            for mapping in private_mappings:
+                if mapping.get('wxid') == source_id:
+                    model_id = mapping.get('model')
+                    if model_id in self.chat_models:
+                        # 切换到指定模型
+                        if self.chat != self.chat_models[model_id]:
+                            self.chat = self.chat_models[model_id]
+                            self.LOG.info(f"已为私聊用户 {source_id} 切换到模型: {self.chat.__class__.__name__}")
+                    else:
+                        self.LOG.warning(f"私聊用户 {source_id} 配置的模型ID {model_id} 不可用，使用默认模型")
+                        if self.default_model_id in self.chat_models:
+                            self.chat = self.chat_models[self.default_model_id]
+                    return
+        
+        # 如果没有找到对应配置，使用默认模型
+        if self.default_model_id in self.chat_models:
+            self.chat = self.chat_models[self.default_model_id]
 
 # 添加Perplexity处理线程类
 class PerplexityThread(Thread):

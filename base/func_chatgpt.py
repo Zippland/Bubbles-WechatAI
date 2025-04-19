@@ -38,9 +38,17 @@ class ChatGPT():
         self.updateMessage(wxid, question, "user")
         rsp = ""
         try:
-            ret = self.client.chat.completions.create(model=self.model,
-                                                      messages=self.conversation_list[wxid],
-                                                      temperature=0.2)
+            # o系列模型不支持自定义temperature，只能使用默认值1
+            params = {
+                "model": self.model,
+                "messages": self.conversation_list[wxid]
+            }
+            
+            # 只有非o系列模型才设置temperature
+            if not self.model.startswith("o"):
+                params["temperature"] = 0.2
+                
+            ret = self.client.chat.completions.create(**params)
             rsp = ret.choices[0].message.content
             rsp = rsp[2:] if rsp.startswith("\n\n") else rsp
             rsp = rsp.replace("\n\n", "\n")
@@ -51,8 +59,10 @@ class ChatGPT():
             self.LOG.error("无法连接到 OpenAI API，请检查网络连接")
         except APIError as e1:
             self.LOG.error(f"OpenAI API 返回了错误：{str(e1)}")
+            rsp = "无法从 ChatGPT 获得答案"
         except Exception as e0:
             self.LOG.error(f"发生未知错误：{str(e0)}")
+            rsp = "无法从 ChatGPT 获得答案"
 
         return rsp
 

@@ -32,6 +32,7 @@ class Config(object):
         self.WEATHER = yconfig["weather"]["receivers"]
         self.GROUPS = yconfig["groups"]["enable"]
         self.WELCOME_MSG = yconfig["groups"].get("welcome_msg", "欢迎 {new_member} 加入群聊！")
+        self.GROUP_MODELS = yconfig["groups"].get("models", {"default": 0, "mapping": []})
         self.NEWS = yconfig["news"]["receivers"]
         self.REPORT_REMINDERS = yconfig["report_reminder"]["receivers"]
 

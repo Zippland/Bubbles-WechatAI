@@ -48,8 +48,34 @@ logging:
     handlers: [console, info_file_handler, error_file_handler]
 
 groups:
-  enable: []  # 允许响应的群 roomId，大概长这样：2xxxxxxxxx3@chatroom
+  enable: [example12345@chatroom,example12345@chatroom]  # 允许响应的群 roomId，大概长这样：2xxxxxxxxx3@chatroom
   welcome_msg: "欢迎 {new_member} 加入群聊！\n请简单介绍一下自己吧~\n如果想和我聊天，可以@我"  # 新人入群欢迎消息，可使用{new_member}和{inviter}变量
+  # 群聊与AI模型映射，如果不配置则使用默认模型
+  models:
+    # 模型ID参考：
+    # 0: 自动选择第一个可用模型
+    # 1: TigerBot
+    # 2: ChatGPT
+    # 3: 讯飞星火
+    # 4: ChatGLM
+    # 5: BardAssistant/Gemini
+    # 6: 智谱ZhiPu
+    # 7: Ollama
+    # 8: DeepSeek
+    # 9: Perplexity
+    default: 0  # 默认模型ID（0表示自动选择第一个可用模型）
+    # 群聊映射
+    mapping:
+      - room_id: example12345@chatroom
+        model: 2  # 对应ChatType.CHATGPT
+      - room_id: example12345@chatroom 
+        model: 7  # 对应ChatType.OLLAMA
+    # 私聊映射
+    private_mapping:
+      - wxid: filehelper
+        model: 2  # 对应ChatType.CHATGPT
+      - wxid: wxid_example12345
+        model: 8  # 对应ChatType.DEEPSEEK
 
 news:
   receivers: ["filehelper"]  # 定时新闻接收人（roomid 或者 wxid）
@@ -67,7 +93,7 @@ weather:  # -----天气提醒配置这行不填-----
 chatgpt:  # -----chatgpt配置这行不填-----
   key:  # 填写你 ChatGPT 的 key
   api: https://api.openai.com/v1  # 如果你不知道这是干嘛的，就不要改
-  model: gpt-3.5-turbo
+  model: gpt-3.5-turbo  # 可选：gpt-3.5-turbo、gpt-4、gpt-4-turbo、gpt-4.1-mini、o4-mini
   proxy:  # 如果你在国内，你可能需要魔法，大概长这样：http://域名或者IP地址:端口号
   prompt: 你是智能聊天机器人，你叫 wcferry  # 根据需要对角色进行设定
 
