@@ -390,37 +390,39 @@ class Robot(Job):
         # 处理消息总结命令
         if content.lower() == "summary" or content == "总结":
             self.LOG.info(f"收到消息总结请求: {msg.content}")
-            # 获取聊天ID
-            chat_id = msg.roomid if msg.from_group() else msg.sender
+            
+            # 只处理群聊中的总结请求
+            if not msg.from_group():
+                self.sendTextMsg("⚠️ 消息总结功能仅支持群聊", msg.sender)
+                return True
+                
+            # 获取群聊ID
+            chat_id = msg.roomid
             
             # 使用MessageSummary生成总结
             summary = self.message_summary.summarize_messages(chat_id, self.chat)
             
             # 发送总结
-            if msg.from_group():
-                self.sendTextMsg(summary, msg.roomid, msg.sender)
-            else:
-                self.sendTextMsg(summary, msg.sender)
-                
+            self.sendTextMsg(summary, msg.roomid, msg.sender)
             return True
         
         # 处理清除历史命令
         if content.lower() == "clearmessages" or content == "清除消息" or content == "清除历史":
             self.LOG.info(f"收到清除消息历史请求: {msg.content}")
-            # 获取聊天ID
-            chat_id = msg.roomid if msg.from_group() else msg.sender
+            
+            # 只处理群聊中的清除历史请求
+            if not msg.from_group():
+                self.sendTextMsg("⚠️ 消息历史管理功能仅支持群聊", msg.sender)
+                return True
+                
+            # 获取群聊ID
+            chat_id = msg.roomid
             
             # 清除历史
             if self.message_summary.clear_message_history(chat_id):
-                if msg.from_group():
-                    self.sendTextMsg("✅ 已清除本群的消息历史记录", msg.roomid, msg.sender)
-                else:
-                    self.sendTextMsg("✅ 已清除与您的消息历史记录", msg.sender)
+                self.sendTextMsg("✅ 已清除本群的消息历史记录", msg.roomid, msg.sender)
             else:
-                if msg.from_group():
-                    self.sendTextMsg("⚠️ 本群没有消息历史记录", msg.roomid, msg.sender)
-                else:
-                    self.sendTextMsg("⚠️ 没有与您的消息历史记录", msg.sender)
+                self.sendTextMsg("⚠️ 本群没有消息历史记录", msg.roomid, msg.sender)
                     
             return True
         

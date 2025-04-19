@@ -199,6 +199,10 @@ class MessageSummary:
             wcf: 微信接口对象
             all_contacts: 所有联系人字典
         """
+        # 只记录群聊消息
+        if not msg.from_group():
+            return
+            
         # 跳过特定类型的消息
         if msg.type != 0x01:  # 只记录文本消息
             return
@@ -207,14 +211,11 @@ class MessageSummary:
         if msg.from_self():
             return
             
-        # 获取接收者ID（群ID或用户ID）
-        chat_id = msg.roomid if msg.from_group() else msg.sender
+        # 获取群聊ID
+        chat_id = msg.roomid
         
         # 获取发送者昵称
-        if msg.from_group():
-            sender_name = wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
-        else:
-            sender_name = all_contacts.get(msg.sender, msg.sender)
+        sender_name = wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
         
         # 记录消息
         self.record_message(chat_id, sender_name, msg.content) 
