@@ -73,7 +73,19 @@ class DuelRankSystem:
                 "score": 1000,  # 初始积分
                 "wins": 0,
                 "losses": 0,
-                "total_matches": 0
+                "total_matches": 0,
+                "items": {  # 新增道具字段
+                    "elder_wand": 0,  # 老魔杖次数
+                    "magic_stone": 0,  # 魔法石次数
+                    "invisibility_cloak": 0  # 隐身衣次数
+                }
+            }
+        # 兼容旧数据，确保有items字段
+        if "items" not in players[player_name]:
+            players[player_name]["items"] = {
+                "elder_wand": 0,
+                "magic_stone": 0,
+                "invisibility_cloak": 0
             }
         return players[player_name]
     
@@ -289,6 +301,17 @@ class HarryPotterDuel:
         self.steps = []
         self.group_id = group_id  # 记录群组ID
         
+        # 检测是否为Boss战（对手是AI"泡泡"）
+        self.is_boss_fight = (player2 == "泡泡")
+        
+        # Boss战特殊设置
+        if self.is_boss_fight:
+            # Boss战胜率极低，设为1%
+            self.player_win_chance = 0.01
+            # 添加Boss战提示信息
+            self.steps.append("⚠️ Boss战开始！挑战强大的魔法师泡泡！")
+            self.steps.append("胜率极低，失败将扣除10分，但如果获胜，将获得一件珍贵的魔法装备！")
+            
         # 设置防御成功率
         self.defense_success_rate = 0.3
         
@@ -365,6 +388,132 @@ class HarryPotterDuel:
     
     def start_duel(self):
         """开始决斗，返回决斗过程的步骤列表"""
+        # Boss战特殊处理
+        if self.is_boss_fight:
+            # 生成随机的Boss战斗过程
+            boss_battle_descriptions = [
+                f"🔮 强大的Boss泡泡挥动魔杖，释放出一道耀眼的紫色光束，{self.player1['name']}勉强躲开！",
+                f"⚡ {self.player1['name']}尝试施放昏昏倒地，但泡泡像预知一般轻松侧身避过！",
+                f"🌪️ 泡泡召唤出一阵魔法旋风，将{self.player1['name']}的咒语全部吹散！",
+                f"🔥 {self.player1['name']}使出全力施放火焰咒，泡泡却用一道水盾将其熄灭！",
+                f"✨ 双方魔杖相对，杖尖迸发出耀眼的金色火花，魔力在空中碰撞！",
+                f"🌟 泡泡释放出数十个魔法分身，{self.player1['name']}不知道哪个是真身！",
+                f"🧙 {self.player1['name']}召唤出守护神，但在泡泡强大的黑魔法面前迅速消散！",
+                f"⚔️ 一连串快速的魔咒交锋，魔法光束在空中交织成绚丽的网！",
+                f"🛡️ 泡泡创造出一道几乎无法破解的魔法屏障，{self.player1['name']}的咒语无法穿透！",
+                f"💫 {self.player1['name']}施放最强一击，能量波动让整个决斗场地震颤！"
+            ]
+            
+            # 只随机选择一条战斗描述添加（减少刷屏）
+            self.steps.append(random.choice(boss_battle_descriptions))
+            
+            # 检查是否战胜Boss（极低概率）
+            if random.random() < self.player_win_chance:  # 玩家赢了
+                winner, loser = self.player1, self.player2
+                
+                # 添加胜利转折点描述
+                victory_turn = [
+                    f"✨ 关键时刻，{winner['name']}找到了泡泡防御的破绽！",
+                    f"🌟 命运女神眷顾了{winner['name']}，一个意外的反弹击中了泡泡的要害！",
+                    f"💥 在泡泡即将施放致命一击时，{winner['name']}突然爆发出前所未有的魔法力量！"
+                ]
+                self.steps.append(random.choice(victory_turn))
+                
+                # 获取积分系统实例
+                rank_system = DuelRankSystem(self.group_id)
+                
+                # 随机获得一件装备
+                items = ["elder_wand", "magic_stone", "invisibility_cloak"]
+                item_names = {"elder_wand": "老魔杖", "magic_stone": "魔法石", "invisibility_cloak": "隐身衣"}
+                
+                # 更新玩家装备，获得所有三种死亡圣器各一次使用机会
+                player_data = rank_system.get_player_data(winner["name"])
+                player_data["items"]["elder_wand"] += 1
+                player_data["items"]["magic_stone"] += 1
+                player_data["items"]["invisibility_cloak"] += 1
+                
+                # 胜利积分固定为200分
+                winner_points = 200
+                
+                # 更新玩家数据
+                player_data["score"] += winner_points
+                player_data["wins"] += 1
+                player_data["total_matches"] += 1
+                
+                # 记录对战历史
+                match_record = {
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "winner": winner["name"],
+                    "loser": loser["name"],
+                    "is_boss_fight": True,
+                    "points": winner_points,
+                    "items_gained": items  # 记录获得了所有道具
+                }
+                rank_system.ranks["groups"][self.group_id]["history"].append(match_record)
+                
+                # 保存数据
+                rank_system._save_ranks()
+                
+                # 获取胜利者当前排名
+                rank, _ = rank_system.get_player_rank(winner["name"])
+                rank_text = f"第{rank}名" if rank else "暂无排名"
+                
+                # 添加获得装备的信息
+                result = (
+                    f"🏆 {winner['name']} 以不可思议的实力击败了强大的Boss泡泡！\n\n"
+                    f"获得了三件死亡圣器！\n"
+                    f"🪄 老魔杖：下次决斗获胜时积分×5\n"
+                    f"💎 魔法石：下次决斗失败时不扣分\n"
+                    f"🧥 隐身衣：下次决斗自动获胜\n\n"
+                    f"积分: +{winner_points}分 ({rank_text})"
+                )
+                
+                self.steps.append(result)
+                return self.steps
+                
+            else:  # 玩家输了
+                winner, loser = self.player2, self.player1
+                
+                # 添加失败结局描述
+                defeat_end = [
+                    f"💀 最终，泡泡施放了一道无法抵挡的魔法，{loser['name']}被击倒在地！",
+                    f"⚰️ 泡泡展现出真正的实力，一击定胜负，{loser['name']}被魔法能量淹没！",
+                    f"☠️ {loser['name']}的魔杖被击飞，不得不认输，泡泡的强大实力不容小觑！"
+                ]
+                self.steps.append(random.choice(defeat_end))
+                
+                # 获取积分系统实例
+                rank_system = DuelRankSystem(self.group_id)
+                
+                # 特殊的积分扣除
+                player_data = rank_system.get_player_data(loser["name"])
+                player_data["score"] = max(1, player_data["score"] - 10)  # 固定扣10分
+                player_data["losses"] += 1
+                player_data["total_matches"] += 1
+                
+                # 记录对战历史
+                match_record = {
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "winner": winner["name"],
+                    "loser": loser["name"],
+                    "is_boss_fight": True,
+                    "points": 10  # 扣10分
+                }
+                rank_system.ranks["groups"][self.group_id]["history"].append(match_record)
+                
+                # 保存数据
+                rank_system._save_ranks()
+                
+                result = (
+                    f"💀 {loser['name']} 不敌强大的Boss泡泡！\n\n"
+                    f"积分: -10分\n"
+                    f"再接再厉，下次挑战吧！"
+                )
+                
+                self.steps.append(result)
+                return self.steps
+        
+        # 普通决斗流程，保持原有逻辑
         # 根据决斗发起者设置先手概率
         if self.player1["is_challenger"]:
             first_attack_prob = 0.6 if self.player1["is_challenger"] else 0.4
@@ -396,6 +545,60 @@ class HarryPotterDuel:
         else:
             attacker = self.player2
             defender = self.player1
+        
+        # 获取积分系统实例
+        rank_system = DuelRankSystem(self.group_id)
+        
+        # 检查player1是否有隐身衣 - 直接获胜
+        player1_data = rank_system.get_player_data(self.player1["name"])
+        if player1_data["items"]["invisibility_cloak"] > 0:
+            # 使用隐身衣
+            player1_data["items"]["invisibility_cloak"] -= 1
+            rank_system._save_ranks()
+            self.steps.append(f"🧥 {self.player1['name']} 使用了隐身衣，潜行偷袭，直接获胜！")
+            
+            # 更新积分
+            winner, loser = self.player1, self.player2
+            
+            # 固定积分变化
+            winner_points = 30
+            
+            # 更新积分
+            player1_data["score"] += winner_points
+            player1_data["wins"] += 1
+            player1_data["total_matches"] += 1
+            
+            player2_data = rank_system.get_player_data(self.player2["name"])
+            player2_data["score"] = max(1, player2_data["score"] - winner_points)
+            player2_data["losses"] += 1
+            player2_data["total_matches"] += 1
+            
+            # 记录对战历史
+            match_record = {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "winner": winner["name"],
+                "loser": loser["name"],
+                "used_item": "invisibility_cloak",
+                "points": winner_points
+            }
+            rank_system.ranks["groups"][self.group_id]["history"].append(match_record)
+            
+            # 保存数据
+            rank_system._save_ranks()
+            
+            # 获取胜利者当前排名
+            rank, _ = rank_system.get_player_rank(winner["name"])
+            rank_text = f"第{rank}名" if rank else "暂无排名"
+            
+            # 添加结果
+            result = (
+                f"🏆 {winner['name']} 使用隐身衣获胜！\n\n"
+                f"积分: {winner['name']} +{winner_points}分 ({rank_text})\n"
+                f"{loser['name']} -{winner_points}分\n\n"
+                f"📦 剩余隐身衣: {player1_data['items']['invisibility_cloak']}次"
+            )
+            self.steps.append(result)
+            return self.steps
         
         # 选择咒语
         spell = self.select_spell()
@@ -478,29 +681,86 @@ class HarryPotterDuel:
                 self.player1["hp"] = 0
                 winner, loser = self.player2, self.player1
         
-        # 决斗结束，确定赢家和积分变化
-        rank_system = DuelRankSystem(self.group_id)
+        # 获取玩家数据用于道具处理
+        winner_data = rank_system.get_player_data(winner["name"])
+        loser_data = rank_system.get_player_data(loser["name"])
         
-        # 更新积分 - 传递总魔法分数作为积分计算依据
-        winner_points, loser_points = rank_system.update_score_by_magic(
-            winner["name"], 
-            loser["name"], 
-            total_magic_power
-        )
+        # 道具效果处理
+        used_item = None
+        
+        # 检查失败者是否有魔法石 - 失败不扣分
+        if winner["name"] != self.player1["name"] and loser_data["items"]["magic_stone"] > 0:
+            # 使用魔法石
+            self.steps.append(f"💎 {loser['name']} 使用了魔法石，虽然失败但是痊愈了！")
+            loser_data["items"]["magic_stone"] -= 1
+            used_item = "magic_stone"
+            # 不扣分，但仍然记录胜负
+            winner_points = total_magic_power
+            loser_points = 0  # 不扣分
+        # 检查胜利者是否有老魔杖 - 胜利积分×5
+        elif winner["name"] == self.player1["name"] and winner_data["items"]["elder_wand"] > 0:
+            # 使用老魔杖
+            self.steps.append(f"🪄 {winner['name']} 使用了老魔杖，魔法威力增加了五倍！")
+            winner_data["items"]["elder_wand"] -= 1
+            used_item = "elder_wand"
+            # 积分×5
+            winner_points = total_magic_power * 5
+            loser_points = total_magic_power  # 常规扣分
+        else:
+            # 正常积分计算
+            winner_points = total_magic_power
+            loser_points = total_magic_power  # 常规扣分
+        
+        # 更新积分
+        winner_data["score"] += winner_points
+        winner_data["wins"] += 1
+        winner_data["total_matches"] += 1
+        
+        loser_data["score"] = max(1, loser_data["score"] - loser_points)  # 防止积分小于1
+        loser_data["losses"] += 1
+        loser_data["total_matches"] += 1
+        
+        # 记录对战历史
+        match_record = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "winner": winner["name"],
+            "loser": loser["name"],
+            "magic_power": total_magic_power,
+            "points": winner_points
+        }
+        
+        # 如果使用了道具，记录在历史中
+        if used_item:
+            match_record["used_item"] = used_item
+        
+        rank_system.ranks["groups"][self.group_id]["history"].append(match_record)
+        
+        # 如果历史记录太多，保留最近的100条
+        if len(rank_system.ranks["groups"][self.group_id]["history"]) > 100:
+            rank_system.ranks["groups"][self.group_id]["history"] = rank_system.ranks["groups"][self.group_id]["history"][-100:]
+        
+        # 保存数据
+        rank_system._save_ranks()
         
         # 获取胜利者当前排名
-        rank, player_data = rank_system.get_player_rank(winner["name"])
+        rank, _ = rank_system.get_player_rank(winner["name"])
         rank_text = f"第{rank}名" if rank else "暂无排名"
         
         # 选择胜利描述
         victory_desc = random.choice(self.victory_descriptions)
         
-        # 结果信息 - 使用victory_descriptions替代ending_phrases并精简积分变化
+        # 结果信息
         result = (
             f"🏆 {winner['name']} {victory_desc}！\n\n"
             f"积分: {winner['name']} +{winner_points}分 ({rank_text})\n"
             f"{loser['name']} -{loser_points}分"
         )
+        
+        # 如果使用了道具，显示剩余次数
+        if used_item == "elder_wand":
+            result += f"\n\n📦 剩余老魔杖: {winner_data['items']['elder_wand']}次"
+        elif used_item == "magic_stone":
+            result += f"\n\n📦 剩余魔法石: {loser_data['items']['magic_stone']}次"
         
         # 添加结果
         self.steps.append(result)

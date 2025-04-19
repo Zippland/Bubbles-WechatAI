@@ -476,9 +476,8 @@ class Robot(Job):
         
         # 决斗排行榜查询
         if content == "决斗排行" or content == "决斗排名" or content == "排行榜":
-            rank_list = get_rank_list(10, msg.roomid)  # 传递群ID
-            self.sendTextMsg(rank_list, msg.roomid)
-            return True
+            self.sendTextMsg("❌ 决斗排行榜功能只支持群聊", msg.sender)
+            return
         
         # 个人战绩查询
         stats_match = re.search(r"(决斗战绩|我的战绩|战绩查询)(.*)", content)
@@ -489,6 +488,25 @@ class Robot(Job):
             
             stats = get_player_stats(player_name, msg.roomid)  # 传递群ID
             self.sendTextMsg(stats, msg.roomid)
+            return True
+        
+        # 查看装备功能
+        if content == "我的装备" or content == "查看装备":
+            player_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+            
+            from base.func_duel import DuelRankSystem
+            rank_system = DuelRankSystem(msg.roomid)
+            player_data = rank_system.get_player_data(player_name)
+            
+            items = player_data["items"]
+            result = [
+                f"🧙‍♂️ {player_name} 的魔法装备:",
+                f"🪄 老魔杖: {items['elder_wand']}次 (胜利积分×10)",
+                f"💎 魔法石: {items['magic_stone']}次 (失败不扣分)",
+                f"🧥 隐身衣: {items['invisibility_cloak']}次 (自动获胜)"
+            ]
+            
+            self.sendTextMsg("\n".join(result), msg.roomid)
             return True
         
         # 帮助信息查询
@@ -959,6 +977,12 @@ class Robot(Job):
                     return
 
                 if msg.is_at(self.wxid):  # 被@
+                    # 私聊改名处理
+                    change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
+                    if change_name_match:
+                        self.sendTextMsg("❌ 改名功能只支持群聊", msg.sender)
+                        return
+
                     # 决斗功能特殊处理 - 直接检测关键词
                     if "决斗" in msg.content:
                         self.LOG.info(f"群聊中检测到可能的决斗请求: {msg.content}")
@@ -1021,32 +1045,25 @@ class Robot(Job):
                     # 决斗功能处理（私聊）
                     duel_match = re.search(r"^决斗\s*(?:@|[与和])\s*([^\s]+)$", msg.content)
                     if duel_match:
-                        opponent_name = duel_match.group(1)
-                        # 获取发送者昵称
-                        sender_name = self.allContacts.get(msg.sender, "挑战者")
-                        
-                        # 检查并启动决斗线程
-                        if not self.start_duel_thread(sender_name, opponent_name, msg.sender, False):
-                            self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.sender)
-                            return
-                        
+                        self.sendTextMsg("❌ 决斗功能只支持群聊", msg.sender)
                         return
                     
                     # 决斗排行榜查询
                     if msg.content == "决斗排行" or msg.content == "决斗排名" or msg.content == "排行榜":
-                        rank_list = get_rank_list(10)  # 私聊不传群ID
-                        self.sendTextMsg(rank_list, msg.sender)
+                        self.sendTextMsg("❌ 决斗排行榜功能只支持群聊", msg.sender)
                         return
                     
                     # 个人战绩查询
                     stats_match = re.search(r"^(决斗战绩|我的战绩|战绩查询)(.*)$", msg.content)
                     if stats_match:
-                        player_name = stats_match.group(2).strip()
-                        if not player_name:  # 如果没有指定名字，则查询发送者
-                            player_name = self.allContacts.get(msg.sender, "未知用户")
+                        self.sendTextMsg("❌ 决斗战绩查询功能只支持群聊", msg.sender)
+                        return
+                    
+                    # 查看装备功能
+                    if msg.content == "我的装备" or msg.content == "查看装备":
+                        player_name = self.allContacts.get(msg.sender, "未知用户")
                         
-                        stats = get_player_stats(player_name)  # 私聊不传群ID
-                        self.sendTextMsg(stats, msg.sender)
+                        self.sendTextMsg("❌ 装备查看功能只支持群聊", msg.sender)
                         return
                     
                     # 帮助信息查询
@@ -1437,10 +1454,15 @@ class Robot(Job):
             is_group: 是否是群聊
         """
         try:
+            # 确保只在群聊中运行决斗
+            if not is_group:
+                self.sendDuelMsg("❌ 决斗功能只支持群聊", receiver)
+                return
+                
             # 开始决斗
             self.sendDuelMsg("⚔️ 决斗即将开始，请稍等...", receiver)
-            # 传递群组ID参数，私聊时为None
-            group_id = receiver if is_group else None
+            # 传递群组ID参数
+            group_id = receiver
             duel_steps = start_duel(challenger_name, opponent_name, group_id, True)  # challenger_name是发起者
             
             # 逐步发送决斗过程
