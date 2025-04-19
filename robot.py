@@ -307,7 +307,20 @@ class Robot(Job):
         # Perplexity触发词
         perplexity_trigger = self.config.PERPLEXITY.get('trigger_keyword', 'ask') if hasattr(self.config, 'PERPLEXITY') else 'ask'
         
-        content = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
+        # 处理引用消息的特殊情况，提取用户实际消息内容
+        if msg.type == 49 and ("<title>" in msg.content or "<appmsg" in msg.content):
+            # 引用消息情况下，用户实际消息在title标签中
+            title_match = re.search(r'<title>(.*?)</title>', msg.content)
+            if title_match:
+                # 提取title中的内容，并删除可能的@机器人前缀
+                content = title_match.group(1)
+                content = re.sub(r'^@[\w\s]+\s+', '', content).strip()
+                self.LOG.info(f"从title提取用户消息: {content}")
+            else:
+                content = ""
+        else:
+            # 普通消息情况
+            content = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
         
         # 处理重置对话记忆命令
         if content.lower() == "reset" or content == "重置" or content == "重置记忆":
@@ -379,7 +392,7 @@ class Robot(Job):
         
         # 决斗功能处理 - 优化正则匹配
         duel_match = re.search(r"决斗.*?(?:@|[与和]).*?([^\s@]+)", content)
-        self.LOG.info(f"决斗检测 - 原始内容: {msg.content}, 处理后内容: {content}, 匹配结果: {duel_match}")
+        #self.LOG.info(f"决斗检测 - 原始内容: {msg.content}, 处理后内容: {content}, 匹配结果: {duel_match}")
         if duel_match:
             opponent_name = duel_match.group(1)
             self.LOG.info(f"决斗对手名称: {opponent_name}")
@@ -509,6 +522,12 @@ class Robot(Job):
                 self.sendTextMsg(f"请在{perplexity_trigger}后面添加您的问题", msg.roomid if msg.from_group() else msg.sender)
                 return True
         
+        # 如果不是特殊命令，交给闲聊处理
+        # 但检查是否有引用消息，让AI知道引用内容
+        if "<refermsg>" in msg.content:
+            self.LOG.info("检测到含引用内容的@消息，提取引用内容")
+            # 引用内容的处理已整合到toChitchat方法中
+            
         return self.toChitchat(msg)
 
     def toChengyu(self, msg: WxMsg) -> bool:
@@ -544,7 +563,28 @@ class Robot(Job):
         if not self.chat:  # 没接 ChatGPT，固定回复
             rsp = "你@我干嘛？"
         else:  # 接了 ChatGPT，智能回复
-            q = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
+            # 提取消息内容，处理引用消息的特殊情况
+            user_msg = ""
+            
+            # 处理类型49的消息（引用、卡片、链接等）
+            if msg.type == 49 and ("<title>" in msg.content or "<appmsg" in msg.content):
+                # 从title标签提取用户实际消息
+                title_match = re.search(r'<title>(.*?)</title>', msg.content)
+                if title_match:
+                    user_msg = title_match.group(1).strip()
+                    # 删除可能的@机器人前缀
+                    user_msg = re.sub(r'^@[\w\s]+\s+', '', user_msg).strip()
+                    
+                    # 记录提取到的用户消息
+                    self.LOG.info(f"从title标签中提取到用户消息: {user_msg}")
+                else:
+                    self.LOG.warning("引用消息中没有找到title标签内容")
+            else:
+                # 普通消息情况，去除@标记
+                user_msg = re.sub(r"@.*?[\u2005|\s]", "", msg.content).strip()
+            
+            # 处理可能存在的引用消息
+            quoted_content = self._extract_quoted_message(msg)
             
             # 获取发送者昵称
             if msg.from_group():
@@ -554,7 +594,19 @@ class Robot(Job):
             
             # 添加时间戳和发送者信息到用户消息前面
             current_time = time.strftime("%H:%M", time.localtime())
-            q_with_info = f"[{current_time}] {sender_name}: {q}"
+            
+            # 构建完整消息，包含用户消息和引用内容（如果有）
+            if not user_msg and quoted_content:
+                # 如果没有提取到用户消息但有引用内容，可能是纯引用消息
+                self.LOG.info(f"处理纯引用消息: 用户={sender_name}, 引用={quoted_content}")
+                q_with_info = f"[{current_time}] {sender_name} 分享了内容: {quoted_content}"
+            elif quoted_content:
+                # 有用户消息和引用内容
+                self.LOG.info(f"处理带引用的消息: 用户={sender_name}, 消息={user_msg}, 引用={quoted_content}")
+                q_with_info = f"[{current_time}] {sender_name}: {user_msg}\n\n[用户引用] {quoted_content}"
+            else:
+                # 只有用户消息
+                q_with_info = f"[{current_time}] {sender_name}: {user_msg}"
             
             rsp = self.chat.get_answer(q_with_info, (msg.roomid if msg.from_group() else msg.sender))
 
@@ -568,6 +620,242 @@ class Robot(Job):
         else:
             self.LOG.error(f"无法从 ChatGPT 获得答案")
             return False
+
+    def _extract_quoted_message(self, msg: WxMsg) -> str:
+        """从微信消息中提取引用内容
+        
+        Args:
+            msg: 微信消息对象
+            
+        Returns:
+            str: 提取的引用内容，如果没有引用返回空字符串
+        """
+        try:
+            # 检查消息类型
+            if msg.type != 0x01 and msg.type != 49:  # 普通文本消息或APP消息
+                return ""
+            
+            # 记录调试信息，帮助排查私聊问题    
+            is_group = msg.from_group()
+            chat_id = msg.roomid if is_group else msg.sender
+            self.LOG.info(f"尝试提取引用消息: 消息类型={msg.type}, 是否群聊={is_group}, 接收ID={chat_id}")
+                
+            # 检查是否包含XML格式的内容 - 增强检测能力
+            has_xml = (msg.content.startswith("<?xml") or 
+                       msg.content.startswith("<msg>") or 
+                       "<appmsg" in msg.content or 
+                       "<refermsg>" in msg.content)
+            has_refer = ("<refermsg>" in msg.content or 
+                         "引用" in msg.content or 
+                         "回复" in msg.content)
+            
+            # 如果非XML且无引用标记，快速返回
+            if not (has_xml or has_refer):
+                return ""
+                
+            self.LOG.info(f"检测到可能包含引用的消息: 类型={msg.type}, XML={has_xml}, 引用={has_refer}, 内容前100字符: {msg.content[:100]}")
+                
+            # 解析XML内容
+            import xml.etree.ElementTree as ET
+            
+            # 处理微信消息可能的格式，特别是私聊消息
+            xml_content = msg.content
+            
+            # 有时私聊消息会有额外的前缀，尝试找到XML的开始位置
+            if not (msg.content.startswith("<?xml") or msg.content.startswith("<msg>")):
+                xml_start_tags = ["<msg>", "<appmsg", "<?xml", "<refermsg>"]
+                for tag in xml_start_tags:
+                    pos = msg.content.find(tag)
+                    if pos >= 0:
+                        xml_content = msg.content[pos:]
+                        self.LOG.info(f"找到XML开始标签 {tag} 位置 {pos}, 截取后内容长度: {len(xml_content)}")
+                        break
+                
+                # 如果找到了XML开始但不是标准XML声明，添加声明
+                if not xml_content.startswith("<?xml"):
+                    xml_content = f"<?xml version='1.0'?>\n{xml_content}"
+                    
+            # 尝试清理可能导致解析失败的字符
+            xml_content = self._clean_xml_for_parsing(xml_content)
+                    
+            # 尝试解析XML
+            root = None
+            try:
+                root = ET.fromstring(xml_content)
+                self.LOG.info("成功解析XML内容")
+            except ET.ParseError as e:
+                self.LOG.warning(f"初次解析XML失败: {e}, 尝试进一步修复")
+                # 尝试更激进的清理
+                xml_content = xml_content.replace("&", "&amp;").replace("<!", "<!--").replace("![", "<!--[").replace("]>", "]-->")
+                try:
+                    root = ET.fromstring(xml_content)
+                    self.LOG.info("在进行额外清理后成功解析XML")
+                except ET.ParseError as e2:
+                    self.LOG.error(f"解析引用消息XML失败: {e2}, 原始内容: {msg.content[:100]}...")
+                    return self._extract_quoted_fallback(msg.content)
+            
+            if root is None:
+                self.LOG.error("无法解析XML内容")
+                return self._extract_quoted_fallback(msg.content)
+            
+            # 记录解析后的XML结构用于调试
+            try:
+                self.LOG.debug(f"解析后的XML根节点标签: {root.tag}")
+            except:
+                pass
+            
+            # 提取引用内容 - 处理多种可能的XML结构，包括私聊特有格式
+            extracted_content = ""
+            
+            # 方式1: 直接在根节点查找refermsg
+            extracted_content = self._extract_from_refermsg(root)
+            if extracted_content:
+                return extracted_content
+            
+            # 方式2: 在appmsg中查找refermsg
+            appmsg = root.find(".//appmsg")
+            if appmsg is not None:
+                # 首先检查标题
+                title = appmsg.find("title")
+                title_text = title.text if title is not None and title.text else ""
+                
+                # 从appmsg的refermsg中提取
+                extracted_content = self._extract_from_refermsg(appmsg)
+                if extracted_content:
+                    return extracted_content
+                
+                # 如果有标题但没有提取到refermsg内容
+                if title_text:
+                    self.LOG.info(f"只找到appmsg标题: {title_text}")
+                    # 查找是否有标记为title的引用内容
+                    if "引用" in title_text or "回复" in title_text:
+                        return f"引用内容: {title_text}"
+                    return f"相关内容: {title_text}"
+            
+            # 方式3: 寻找任何可能包含引用信息的元素
+            if "引用" in xml_content or "回复" in xml_content:
+                for elem in root.findall(".//*"):
+                    if elem.text and ("引用" in elem.text or "回复" in elem.text):
+                        self.LOG.info(f"通过关键词找到可能的引用内容: {elem.text[:30]}...")
+                        return f"引用内容: {elem.text}"
+            
+            # 最后的后备方案：直接从原始内容提取
+            return self._extract_quoted_fallback(msg.content)
+            
+        except Exception as e:
+            self.LOG.error(f"提取引用消息时出错: {e}")
+            # 即使出错也尝试提取
+            return self._extract_quoted_fallback(msg.content)
+    
+    def _extract_from_refermsg(self, element) -> str:
+        """从refermsg元素中提取引用内容
+        
+        Args:
+            element: XML元素，可能包含refermsg子元素
+            
+        Returns:
+            str: 提取的引用内容，如果未找到返回空字符串
+        """
+        try:
+            refer_msg = element.find(".//refermsg")
+            if refer_msg is None:
+                return ""
+                
+            # 提取引用的发送者和内容
+            display_name = refer_msg.find("displayname")
+            content = refer_msg.find("content")
+            
+            display_name_text = display_name.text if display_name is not None and display_name.text else ""
+            content_text = content.text if content is not None and content.text else ""
+            
+            # 清理可能存在的HTML/XML标签，确保纯文本
+            if content_text:
+                content_text = re.sub(r'<.*?>', '', content_text)
+                # 不再限制引用内容长度
+            
+            if display_name_text and content_text:
+                return f"{display_name_text}: {content_text}"
+            elif content_text:
+                return content_text
+                
+            return ""
+        except Exception as e:
+            self.LOG.error(f"从refermsg提取内容时出错: {e}")
+            return ""
+    
+    def _clean_xml_for_parsing(self, xml_content: str) -> str:
+        """清理XML内容，使其更容易被解析
+        
+        Args:
+            xml_content: 原始XML内容
+            
+        Returns:
+            str: 清理后的XML内容
+        """
+        try:
+            # 替换常见的问题字符
+            cleaned = xml_content.replace("&", "&amp;")
+            
+            # 处理CDATA部分
+            cleaned = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', cleaned, flags=re.DOTALL)
+            
+            # 移除可能导致解析问题的控制字符
+            cleaned = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', cleaned)
+            
+            # 如果清理后的内容太长，截取合理长度以提高解析效率
+            if len(cleaned) > 10000:  # 10KB上限
+                cleaned = cleaned[:10000]
+                self.LOG.warning(f"XML内容过长，已截断至10000字符")
+            
+            return cleaned
+        except Exception as e:
+            self.LOG.error(f"清理XML内容时出错: {e}")
+            return xml_content
+    
+    def _extract_quoted_fallback(self, content: str) -> str:
+        """当XML解析失败时的后备提取方法
+        
+        Args:
+            content: 原始消息内容
+            
+        Returns:
+            str: 提取的引用内容，如果未找到返回空字符串
+        """
+        try:
+            # 使用正则表达式直接从内容中提取
+            # 查找<content>标签内容
+            content_match = re.search(r'<content>(.*?)</content>', content, re.DOTALL)
+            if content_match:
+                extracted = content_match.group(1)
+                # 清理可能存在的XML标签
+                extracted = re.sub(r'<.*?>', '', extracted)
+                # 不再限制内容长度
+                return extracted
+                
+            # 查找displayname和content的组合
+            display_name_match = re.search(r'<displayname>(.*?)</displayname>', content, re.DOTALL)
+            content_match = re.search(r'<content>(.*?)</content>', content, re.DOTALL)
+            
+            if display_name_match and content_match:
+                name = re.sub(r'<.*?>', '', display_name_match.group(1))
+                text = re.sub(r'<.*?>', '', content_match.group(1))
+                # 不再限制内容长度
+                return f"{name}: {text}"
+                
+            # 查找引用或回复的关键词
+            if "引用" in content or "回复" in content:
+                # 寻找引用关键词后的内容
+                match = re.search(r'[引用|回复].*?[:：](.*?)(?:<|$)', content, re.DOTALL)
+                if match:
+                    text = match.group(1).strip()
+                    text = re.sub(r'<.*?>', '', text)
+                    # 不再限制内容长度
+                    return text
+            
+            return ""
+        except Exception as e:
+            self.LOG.error(f"后备提取引用内容时出错: {e}")
+            return ""
 
     def processMsg(self, msg: WxMsg) -> None:
         """当接收到消息的时候，会调用本方法。如果不实现本方法，则打印原始消息。
