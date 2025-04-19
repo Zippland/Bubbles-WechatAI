@@ -546,7 +546,7 @@ class Robot(Job):
                 perplexity_instance = self.get_perplexity_instance()
                 if perplexity_instance:
                     chat_id = msg.roomid if msg.from_group() else msg.sender
-                    return perplexity_instance.process_message(
+                    processed_by_perplexity = perplexity_instance.process_message(
                         content=content,
                         chat_id=chat_id,
                         sender=msg.sender,
@@ -554,6 +554,9 @@ class Robot(Job):
                         from_group=msg.from_group(),
                         send_text_func=self.sendTextMsg
                     )
+                    if processed_by_perplexity:
+                        return True
+                    # 如果Perplexity因权限不足等原因未处理，继续传递给toChitchat
                 else:
                     self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
                     return True
@@ -1075,14 +1078,15 @@ class Robot(Job):
                         perplexity_instance = self.get_perplexity_instance()
                         if perplexity_instance:
                             chat_id = msg.roomid if msg.from_group() else msg.sender
-                            if perplexity_instance.process_message(
+                            processed_by_perplexity = perplexity_instance.process_message(
                                 content=msg.content,
                                 chat_id=chat_id,
                                 sender=msg.sender,
                                 roomid=msg.roomid,
                                 from_group=msg.from_group(),
                                 send_text_func=self.sendTextMsg
-                            ):
+                            )
+                            if processed_by_perplexity:
                                 return True
                         else:
                             self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
