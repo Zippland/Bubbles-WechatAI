@@ -1382,7 +1382,7 @@ class Robot(Job):
             self.sendDuelMsg("⚔️ 决斗即将开始，请稍等...", receiver)
             # 传递群组ID参数，私聊时为None
             group_id = receiver if is_group else None
-            duel_steps = start_duel(challenger_name, opponent_name, group_id)
+            duel_steps = start_duel(challenger_name, opponent_name, group_id, True)  # challenger_name是发起者
             
             # 逐步发送决斗过程
             for step in duel_steps:

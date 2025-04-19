@@ -12,10 +12,14 @@ class DuelRankSystem:
         初始化排位系统
         
         Args:
-            group_id: 群组ID，默认为None表示私聊
+            group_id: 群组ID
             data_file: 数据文件路径
         """
-        self.group_id = group_id if group_id else "private"  # 使用"private"作为私聊标识
+        # 确保group_id不为空，现在只支持群聊
+        if not group_id:
+            raise ValueError("决斗功能只支持群聊")
+            
+        self.group_id = group_id
         self.data_file = data_file
         self.ranks = self._load_ranks()
         
@@ -207,49 +211,144 @@ class DuelRankSystem:
         # 保存更改
         self._save_ranks()
         return True
+    
+    def update_score_by_magic(self, winner: str, loser: str, magic_power: int) -> Tuple[int, int]:
+        """根据魔法分数更新玩家积分
+        
+        Args:
+            winner: 胜利者名称
+            loser: 失败者名称
+            magic_power: 决斗中所有参与者使用的魔法总分数
+            
+        Returns:
+            Tuple[int, int]: (胜利者获得积分, 失败者失去积分)
+        """
+        # 获取玩家数据
+        winner_data = self.get_player_data(winner)
+        loser_data = self.get_player_data(loser)
+        
+        # 使用魔法总分作为积分变化值
+        points = magic_power
+        
+        # 确保为零和游戏 - 胜者得到的积分等于败者失去的积分
+        winner_data["score"] += points
+        winner_data["wins"] += 1
+        winner_data["total_matches"] += 1
+        
+        loser_data["score"] = max(1, loser_data["score"] - points)  # 防止积分小于1
+        loser_data["losses"] += 1
+        loser_data["total_matches"] += 1
+        
+        # 记录对战历史
+        match_record = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "winner": winner,
+            "loser": loser,
+            "magic_power": magic_power,
+            "points": points
+        }
+        self.ranks["groups"][self.group_id]["history"].append(match_record)
+        
+        # 如果历史记录太多，保留最近的100条
+        if len(self.ranks["groups"][self.group_id]["history"]) > 100:
+            self.ranks["groups"][self.group_id]["history"] = self.ranks["groups"][self.group_id]["history"][-100:]
+        
+        # 保存数据
+        self._save_ranks()
+        
+        return (points, points)  # 返回胜者得分和败者失分（相同）
 
 class HarryPotterDuel:
     """决斗功能"""
     
-    def __init__(self, player1, player2, group_id=None):
+    def __init__(self, player1, player2, group_id, player1_is_challenger=True):
         """
         初始化决斗
         :param player1: 玩家1的名称
         :param player2: 玩家2的名称
-        :param group_id: 群组ID，默认为None表示私聊
+        :param group_id: 群组ID
+        :param player1_is_challenger: 玩家1是否为决斗发起者
         """
-        self.p1_name = player1
-        self.p2_name = player2
-        self.p1_hp = 100
-        self.p2_hp = 100
+        # 确保只在群聊中决斗
+        if not group_id:
+            raise ValueError("决斗功能只支持群聊")
+            
+        self.player1 = {
+            "name": player1, 
+            "hp": 100, 
+            "spells": [], 
+            "is_challenger": player1_is_challenger
+        }
+        self.player2 = {
+            "name": player2, 
+            "hp": 100, 
+            "spells": [], 
+            "is_challenger": not player1_is_challenger
+        }
         self.rounds = 0
         self.steps = []
         self.group_id = group_id  # 记录群组ID
         
-        # 使用红方和蓝方替代名字
-        self.red_player = {"name": self.p1_name, "hp": self.p1_hp, "emoji": "🔴"}
-        self.blue_player = {"name": self.p2_name, "hp": self.p2_hp, "emoji": "🔵"}
-        
-        # 记录开场信息
-        self.steps.append(f"⚔️ {self.red_player['emoji']} {self.red_player['name']} \nVS \n⚔️ {self.blue_player['emoji']} {self.blue_player['name']}")
+        # 设置防御成功率
+        self.defense_success_rate = 0.3
         
         # 咒语列表（名称、威力、权重）- 权重越小越稀有
         self.spells = [
-            {"name": "除你武器", "power": 10, "weight": 30, "desc": "🪄"},
-            {"name": "昏昏倒地", "power": 15, "weight": 25, "desc": "✨"},
-            {"name": "统统石化", "power": 20, "weight": 20, "desc": "💫"},
-            {"name": "障碍重重", "power": 25, "weight": 15, "desc": "⚡"},
-            {"name": "神锋无影", "power": 35, "weight": 10, "desc": "🗡️"},
-            {"name": "钻心剜骨", "power": 45, "weight": 5, "desc": "🔥"},
-            {"name": "阿瓦达索命", "power": 100, "weight": 1, "desc": "💀"}
+            {"name": "除你武器", "power": 10, "weight": 30, "desc": "🪄", 
+             "attack_desc": ["挥动魔杖划出一道弧线，魔杖尖端发出红光，释放", "伸手一指对手的魔杖，大声喊道", "用魔杖直指对手，施放缴械咒"],
+             "damage_desc": ["被红光击中，魔杖瞬间脱手飞出", "的魔杖被一股无形力量扯离手掌，飞向远处", "手中魔杖突然被击飞，不得不空手应对"]},
+            
+            {"name": "昏昏倒地", "power": 25, "weight": 25, "desc": "✨", 
+             "attack_desc": ["魔杖发出耀眼的红光，发射昏迷咒", "快速挥舞魔杖，释放出一道猩红色闪光", "高声呼喊咒语，杖尖喷射出红色火花"],
+             "damage_desc": ["被红光击中，意识开始模糊，几近昏迷", "躲闪不及，被击中后身体摇晃，眼神涣散", "被咒语命中，双腿一软，差点跪倒在地"]},
+            
+            {"name": "统统石化", "power": 40, "weight": 20, "desc": "💫", 
+             "attack_desc": ["直指对手，魔杖尖端射出蓝白色光芒，施放石化咒", "魔杖在空中划过一道蓝光，精准施放", "双目紧盯对手，冷静施展全身束缚咒"],
+             "damage_desc": ["身体被蓝光罩住，四肢瞬间变得僵硬如石", "全身突然绷紧，像被无形的绳索紧紧束缚", "动作突然凝固，仿佛变成了一座雕像"]},
+            
+            {"name": "障碍重重", "power": 55, "weight": 15, "desc": "⚡", 
+             "attack_desc": ["魔杖猛地向前一挥，发射出闪亮的紫色光束", "大声念出咒语，同时杖尖射出炫目光芒", "旋转魔杖制造出一道旋转的障碍咒"],
+             "damage_desc": ["被一股无形的力量狠狠推开，猛烈撞上后方障碍物", "身体被击中后像断线风筝般飞出数米，重重摔落", "被强大的冲击波掀翻在地，一时无法站起"]},
+            
+            {"name": "神锋无影", "power": 70, "weight": 10, "desc": "🗡️", 
+             "attack_desc": ["低声念诵，魔杖如剑般挥下", "以危险的低沉嗓音念诵咒语，杖尖闪烁着寒光", "用魔杖在空中划出复杂轨迹，释放斯内普的秘咒"],
+             "damage_desc": ["身上突然出现多道无形的切割伤口，鲜血喷涌而出", "惨叫一声，胸前与面部浮现出深深的伤痕，鲜血直流", "被无形的刀刃划过全身，衣物和皮肤同时被割裂，伤痕累累"]},
+            
+            {"name": "钻心剜骨", "power": 85, "weight": 5, "desc": "🔥", 
+             "attack_desc": ["眼中闪过一丝狠厉，用尖利的声音喊出不可饶恕咒", "面露残忍笑容，魔杖直指对手施放酷刑咒", "用充满恶意的声音施放黑魔法，享受对方的痛苦"],
+             "damage_desc": ["被咒语击中，全身每一根神经都在燃烧般剧痛，倒地挣扎哀嚎", "发出撕心裂肺的惨叫，痛苦地在地上痉挛扭曲", "遭受前所未有的剧痛折磨，脸上血管暴起，痛不欲生"]},
+            
+            {"name": "阿瓦达索命", "power": 100, "weight": 1, "desc": "💀", 
+             "attack_desc": ["用充满杀意的声音念出死咒，魔杖喷射出刺目的绿光", "冷酷无情地发出致命死咒，绿光直射对手", "毫无犹豫地使用了最邪恶的不可饶恕咒，绿光闪耀"],
+             "damage_desc": ["被绿光正面击中，生命瞬间被夺走，眼神空洞地倒下", "还未来得及反应，生命便随着绿光的接触戛然而止", "被死咒击中，身体僵直地倒下，生命气息完全消失"]}
         ]
         
-        # 防御咒语列表（名称、成功率）
+        # 防御咒语列表（名称、描述）- 统一使用self.defense_success_rate作为成功率
         self.defense_spells = [
-            {"name": "盔甲护身", "success_rate": 0.3, "desc": "🛡️"},
-            {"name": "除你武器", "success_rate": 0.2, "desc": "⚔️"},
-            {"name": "呼神护卫", "success_rate": 0.1, "desc": "🧿"}
+            {"name": "盔甲护身", "desc": "🛡️", 
+             "defense_desc": ["迅速在身前制造出一道透明魔法屏障，挡住了攻击", "挥动魔杖在周身形成一道金色防御光幕，抵消了咒语", "大声喊出咒语，召唤出强力的防护盾牌"]},
+            
+            {"name": "除你武器", "desc": "⚔️", 
+             "defense_desc": ["用缴械咒反击，成功击飞对方魔杖", "喊道出魔咒，让对手的魔咒偏离方向", "巧妙反击，用缴械咒化解了对手的攻击"]},
+            
+            {"name": "呼神护卫", "desc": "🧿", 
+             "defense_desc": ["全神贯注地召唤出银色守护神，抵挡住了攻击", "魔杖射出耀眼银光，形成守护屏障吸收了咒语", "集中思念快乐回忆，释放出强大的守护神魔法"]}
         ]
+        
+        # 设置胜利描述
+        self.victory_descriptions = [
+            "让对手失去了战斗能力",
+            "最终击倒了对手",
+            "的魔法取得了胜利",
+            "的致命一击决定了结果",
+            "的魔法赢得了这场决斗",
+            "对魔法的控制带来了胜利",
+            "在激烈的对决中占据上风",
+            "毫无悬念地获胜"
+        ]
+        
+        # 记录开场信息
+        self.steps.append(f"⚔️ 决斗开始 ⚔️\n{self.player1['name']} VS {self.player2['name']}")
     
     def select_spell(self):
         """随机选择一个咒语，威力越高出现概率越低"""
@@ -261,127 +360,171 @@ class HarryPotterDuel:
     def attempt_defense(self):
         """尝试防御，返回是否成功和使用的防御咒语"""
         defense = random.choice(self.defense_spells)
-        success = random.random() < defense["success_rate"]
+        success = random.random() < self.defense_success_rate
         return success, defense
     
     def start_duel(self):
         """开始决斗，返回决斗过程的步骤列表"""
-        current_attacker = "red" if random.random() < 0.5 else "blue"
+        # 根据决斗发起者设置先手概率
+        if self.player1["is_challenger"]:
+            first_attack_prob = 0.6 if self.player1["is_challenger"] else 0.4
+            current_attacker = "player1" if random.random() < first_attack_prob else "player2"
+        else:
+            first_attack_prob = 0.6 if self.player2["is_challenger"] else 0.4
+            current_attacker = "player2" if random.random() < first_attack_prob else "player1"
         
-        battle_round_buffer = []
-        round_count = 0
+        # 随机选择先手介绍语
+        first_move_descriptions = [
+            "抢先出手，迅速进入战斗状态，",
+            "反应更快，抢得先机，",
+            "魔杖一挥，率先发动攻击，",
+            "眼疾手快，先发制人，",
+            "气势如虹，先声夺人，",
+            "以迅雷不及掩耳之势抢先出手，"
+        ]
         
-        # 持续战斗直到一方生命值为零
-        while self.red_player["hp"] > 0 and self.blue_player["hp"] > 0:
-            self.rounds += 1
-            round_count += 1
+        # 记录所有魔法分数的总和
+        total_magic_power = 0
+        
+        # 一击必胜模式，只有一回合
+        self.rounds = 1
+        
+        # 确定当前回合的攻击者和防御者
+        if current_attacker == "player1":
+            attacker = self.player1
+            defender = self.player2
+        else:
+            attacker = self.player2
+            defender = self.player1
+        
+        # 选择咒语
+        spell = self.select_spell()
+        
+        # 记录使用的魔法分数
+        total_magic_power += spell["power"]
+        attacker["spells"].append(spell)
+        
+        # 先手介绍与咒语专属攻击描述组合在一起
+        first_move_desc = random.choice(first_move_descriptions)
+        # 从咒语的专属攻击描述中随机选择一个
+        spell_attack_desc = random.choice(spell["attack_desc"])
+        attack_info = f"🎲 {attacker['name']} {first_move_desc}{spell_attack_desc} {spell['name']}{spell['desc']}"
+        self.steps.append(attack_info)
+        
+        # 尝试防御
+        defense_success, defense = self.attempt_defense()
+        
+        if defense_success:
+            # 防御成功，使用防御咒语的专属描述
+            defense_desc = random.choice(defense["defense_desc"])
+            defense_info = f"{defender['name']} {defense_desc}，使用 {defense['name']}{defense['desc']} 防御成功！"
+            self.steps.append(defense_info)
             
-            # 确定当前回合的攻击者和防御者
-            if current_attacker == "red":
-                attacker = self.red_player
-                defender = self.blue_player
-            else:
-                attacker = self.blue_player
-                defender = self.red_player
+            # 记录防御使用的魔法分数
+            for defense_spell in self.defense_spells:
+                if defense_spell["name"] == defense["name"]:
+                    total_magic_power += 20  # 防御魔法固定20分
+                    break
+                        
+            # 转折描述与反击描述组合
+            counter_transition = [
+                "防御成功后立即抓住机会反击，",
+                "挡下攻击的同时，立刻准备反攻，",
+                "借着防御的势头，迅速转为攻势，",
+                "一个漂亮的防御后，立刻发起反击，",
+                "丝毫不给对手喘息的机会，立即反击，"
+            ]
             
-            # 选择咒语
-            spell = self.select_spell()
+            # 反制：防守方变为攻击方
+            counter_spell = self.select_spell()
             
-            # 构建回合信息
-            round_info = f"{attacker['emoji']} {spell['name']}{spell['desc']} → "
-            
-            # 尝试防御
-            defense_success, defense = self.attempt_defense()
-            
-            if defense_success:
-                round_info += f"{defender['emoji']} {defense['name']}{defense['desc']}"
-            else:
-                # 计算伤害
-                damage = spell["power"]
+            # 记录反制使用的魔法分数
+            total_magic_power += counter_spell["power"]
+            defender["spells"].append(counter_spell)
                 
-                # 阿瓦达索命一击必杀
-                if spell["name"] == "阿瓦达索命":
-                    if current_attacker == "red":
-                        self.blue_player["hp"] = 0
-                    else:
-                        self.red_player["hp"] = 0
-                    round_info += f"{defender['emoji']} 💀 致命一击！"
-                else:
-                    # 伤害浮动范围1-1.5倍
-                    damage = int(damage * (1 + (random.random() * 0.5)))
-                    
-                    # 造成伤害
-                    if current_attacker == "red":
-                        self.blue_player["hp"] = max(0, self.blue_player["hp"] - damage)
-                    else:
-                        self.red_player["hp"] = max(0, self.red_player["hp"] - damage)
-                    
-                    round_info += f"{defender['emoji']} 💥{damage}"
+            # 转折与咒语专属反击描述组合在一起
+            counter_transition_desc = random.choice(counter_transition)
+            # 从反制咒语的专属攻击描述中随机选择一个
+            counter_spell_attack_desc = random.choice(counter_spell["attack_desc"])
+            counter_info = f"{defender['name']} {counter_transition_desc}{counter_spell_attack_desc} {counter_spell['name']}{counter_spell['desc']}"
+            self.steps.append(counter_info)
             
-            # 添加到缓冲区
-            battle_round_buffer.append(round_info)
+            # 显示反击造成的伤害描述
+            counter_damage_desc = random.choice(counter_spell["damage_desc"])
+            if current_attacker == "player1":
+                damage_info = f"{self.player1['name']} {counter_damage_desc}！"
+            else:
+                damage_info = f"{self.player2['name']} {counter_damage_desc}！"
+            self.steps.append(damage_info)
             
-            # 每2回合或者战斗结束时发送汇总消息
-            if round_count >= 2 or self.red_player["hp"] <= 0 or self.blue_player["hp"] <= 0:
-                summary = "\n".join(battle_round_buffer)
-                self.steps.append(f"{summary}")
-                battle_round_buffer = []
-                round_count = 0
+            # 防御成功并反制，原攻击者直接失败
+            if current_attacker == "player1":
+                self.player1["hp"] = 0
+                winner, loser = self.player2, self.player1
+            else:
+                self.player2["hp"] = 0
+                winner, loser = self.player1, self.player2
+        else:
+            # 防御失败，直接被击败
+            # 从攻击咒语的专属伤害描述中随机选择一个
+            damage_desc = random.choice(spell["damage_desc"])
+            damage_info = f"{defender['name']} {damage_desc}！"
+            self.steps.append(damage_info)
             
-            # 切换攻击者
-            current_attacker = "blue" if current_attacker == "red" else "red"
+            if current_attacker == "player1":
+                self.player2["hp"] = 0
+                winner, loser = self.player1, self.player2
+            else:
+                self.player1["hp"] = 0
+                winner, loser = self.player2, self.player1
         
         # 决斗结束，确定赢家和积分变化
         rank_system = DuelRankSystem(self.group_id)
         
-        if self.red_player["hp"] <= 0:
-            winner, loser = self.blue_player, self.red_player
-        else:
-            winner, loser = self.red_player, self.blue_player
-        
-        # 更新积分
-        winner_points, loser_points = rank_system.update_score(
+        # 更新积分 - 传递总魔法分数作为积分计算依据
+        winner_points, loser_points = rank_system.update_score_by_magic(
             winner["name"], 
             loser["name"], 
-            winner["hp"],
-            self.rounds
+            total_magic_power
         )
         
         # 获取胜利者当前排名
         rank, player_data = rank_system.get_player_rank(winner["name"])
-        rank_text = f"当前排名: 第{rank}位" if rank else "暂无排名"
+        rank_text = f"第{rank}名" if rank else "暂无排名"
         
-        # 本场地点
-        location_text = "私聊决斗" if self.group_id is None else f"群聊决斗"
+        # 选择胜利描述
+        victory_desc = random.choice(self.victory_descriptions)
         
-        # 结果信息
+        # 结果信息 - 使用victory_descriptions替代ending_phrases并精简积分变化
         result = (
-            f"🏆 {winner['emoji']} {winner['name']} 获胜！\n"
-            f"剩余生命值: ❤️ {winner['hp']} | 回合数: {self.rounds}\n\n"
-            f"📊 积分变化 ({location_text}):\n"
-            f"{winner['emoji']} {winner['name']} +{winner_points} 分 ({player_data['score']}分)\n"
-            f"{loser['emoji']} {loser['name']} -{loser_points} 分\n"
-            f"{rank_text}"
+            f"🏆 {winner['name']} {victory_desc}！\n\n"
+            f"积分: {winner['name']} +{winner_points}分 ({rank_text})\n"
+            f"{loser['name']} -{loser_points}分"
         )
         
         # 添加结果
         self.steps.append(result)
         return self.steps
 
-def start_duel(player1: str, player2: str, group_id=None) -> List[str]:
+def start_duel(player1: str, player2: str, group_id=None, player1_is_challenger=True) -> List[str]:
     """
     启动一场决斗
     
     Args:
         player1: 玩家1的名称
         player2: 玩家2的名称
-        group_id: 群组ID，默认为None表示私聊
+        group_id: 群组ID，必须提供
+        player1_is_challenger: 玩家1是否为挑战发起者
         
     Returns:
         List[str]: 决斗过程的步骤
     """
+    # 确保只在群聊中决斗
+    if not group_id:
+        return ["❌ 决斗功能只支持群聊"]
+        
     try:
-        duel = HarryPotterDuel(player1, player2, group_id)
+        duel = HarryPotterDuel(player1, player2, group_id, player1_is_challenger)
         return duel.start_duel()
     except Exception as e:
         logging.error(f"决斗过程中发生错误: {e}")
@@ -392,8 +535,12 @@ def get_rank_list(top_n: int = 10, group_id=None) -> str:
     
     Args:
         top_n: 返回前几名
-        group_id: 群组ID，默认为None表示私聊
+        group_id: 群组ID，必须提供
     """
+    # 确保只在群聊中获取排行榜
+    if not group_id:
+        return "❌ 决斗排行榜功能只支持群聊"
+        
     try:
         rank_system = DuelRankSystem(group_id)
         ranks = rank_system.get_rank_list(top_n)
@@ -401,8 +548,7 @@ def get_rank_list(top_n: int = 10, group_id=None) -> str:
         if not ranks:
             return "📊 决斗排行榜还没有数据"
         
-        location_text = "私聊" if group_id is None else "本群"
-        result = [f"📊 {location_text}决斗排行榜 Top {len(ranks)}"]
+        result = [f"📊 本群决斗排行榜 Top {len(ranks)}"]
         for i, player in enumerate(ranks):
             medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i+1}."
             win_rate = int((player["wins"] / player["total_matches"]) * 100) if player["total_matches"] > 0 else 0
@@ -418,17 +564,20 @@ def get_player_stats(player_name: str, group_id=None) -> str:
     
     Args:
         player_name: 玩家名称
-        group_id: 群组ID，默认为None表示私聊
+        group_id: 群组ID，必须提供
     """
+    # 确保只在群聊中获取战绩
+    if not group_id:
+        return "❌ 决斗战绩查询功能只支持群聊"
+        
     try:
         rank_system = DuelRankSystem(group_id)
         rank, player_data = rank_system.get_player_rank(player_name)
         
         win_rate = int((player_data["wins"] / player_data["total_matches"]) * 100) if player_data["total_matches"] > 0 else 0
         
-        location_text = "私聊" if group_id is None else "本群"
         result = [
-            f"📊 {player_name} 的{location_text}决斗战绩",
+            f"📊 {player_name} 的本群决斗战绩",
             f"排名: {rank if rank else '暂无排名'}",
             f"积分: {player_data['score']}",
             f"胜场: {player_data['wins']}",
@@ -448,21 +597,23 @@ def change_player_name(old_name: str, new_name: str, group_id=None) -> str:
     Args:
         old_name: 旧名称
         new_name: 新名称
-        group_id: 群组ID，默认为None表示私聊
+        group_id: 群组ID，必须提供
         
     Returns:
         str: 操作结果消息
     """
+    # 确保只在群聊中更改玩家名称
+    if not group_id:
+        return "❌ 更改玩家名称功能只支持群聊"
+        
     try:
         rank_system = DuelRankSystem(group_id)
         result = rank_system.change_player_name(old_name, new_name)
         
-        location_text = "私聊" if group_id is None else "本群"
-        
         if result:
-            return f"✅ 已成功将{location_text}中的玩家 \"{old_name}\" 改名为 \"{new_name}\"，历史战绩已保留"
+            return f"✅ 已成功将本群中的玩家 \"{old_name}\" 改名为 \"{new_name}\"，历史战绩已保留"
         else:
-            return f"❌ 改名失败：请确认 \"{old_name}\" 在{location_text}中有战绩记录，且 \"{new_name}\" 名称未被使用"
+            return f"❌ 改名失败：请确认 \"{old_name}\" 在本群中有战绩记录，且 \"{new_name}\" 名称未被使用"
     except Exception as e:
         logging.error(f"更改玩家名称失败: {e}")
         return f"❌ 更改玩家名称失败: {e}"
