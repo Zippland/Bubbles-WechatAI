@@ -476,8 +476,10 @@ class Robot(Job):
         
         # 决斗排行榜查询
         if content == "决斗排行" or content == "决斗排名" or content == "排行榜":
-            self.sendTextMsg("❌ 决斗排行榜功能只支持群聊", msg.sender)
-            return
+            from base.func_duel import get_rank_list
+            rank_list = get_rank_list(10, msg.roomid)  # 正确传递群组ID
+            self.sendTextMsg(rank_list, msg.roomid)
+            return True
         
         # 个人战绩查询
         stats_match = re.search(r"(决斗战绩|我的战绩|战绩查询)(.*)", content)
