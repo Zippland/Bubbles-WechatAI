@@ -67,7 +67,7 @@ class Perplexity:
             ]
             
             # 获取模型
-            model = self.config.get('model', 'mixtral-8x7b-instruct')
+            model = self.config.get('model', 'sonar')
             
             # 使用json序列化确保正确处理Unicode
             self.LOG.info(f"发送到Perplexity的消息: {json.dumps(messages, ensure_ascii=False)}")

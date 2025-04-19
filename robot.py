@@ -49,6 +49,10 @@ class Robot(Job):
         self._duel_thread = None
         self._duel_lock = Lock()
         
+        # Perplexity请求线程管理
+        self._perplexity_threads = {}
+        self._perplexity_lock = Lock()
+        
         # 消息历史记录 - 存储最近的200条消息
         self._msg_history = {}  # 使用字典，以群ID或用户ID为键
         self._msg_history_lock = Lock()  # 添加锁以保证线程安全
@@ -458,28 +462,51 @@ class Robot(Job):
                     if hasattr(self.config, 'PERPLEXITY') and Perplexity.value_check(self.config.PERPLEXITY):
                         self.perplexity = Perplexity(self.config.PERPLEXITY)
                     else:
-                        self.sendTextMsg("Perplexity服务未配置", msg.roomid, msg.sender)
+                        self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
                         return True
                 
                 # 使用现有的chat实例如果它是Perplexity
                 perplexity_instance = self.perplexity if hasattr(self, 'perplexity') else (self.chat if isinstance(self.chat, Perplexity) else None)
                 
                 if perplexity_instance:
-                    self.sendTextMsg("正在查询Perplexity，请稍候...", msg.roomid, msg.sender)
+                    chat_id = msg.roomid if msg.from_group() else msg.sender
+                    receiver = msg.roomid if msg.from_group() else msg.sender
+                    at_user = msg.sender if msg.from_group() else None
                     
-                    # Perplexity不需要添加发送者信息和时间戳
-                    response = perplexity_instance.get_answer(prompt, msg.roomid if msg.from_group() else msg.sender)
-                    if response:
-                        self.sendTextMsg(response, msg.roomid, msg.sender)
-                        return True
-                    else:
-                        self.sendTextMsg("无法从Perplexity获取回答", msg.roomid, msg.sender)
-                        return True
+                    # 检查是否已有正在处理的相同请求
+                    thread_key = f"{receiver}_{chat_id}"
+                    with self._perplexity_lock:
+                        if thread_key in self._perplexity_threads and self._perplexity_threads[thread_key].is_alive():
+                            self.sendTextMsg("⚠️ 已有一个Perplexity请求正在处理中，请稍后再试", receiver, at_user)
+                            return True
+                    
+                    # 发送等待消息
+                    self.sendTextMsg("正在查询Perplexity，请稍候...", receiver, at_user)
+                    
+                    # 创建并启动新线程处理请求
+                    perplexity_thread = PerplexityThread(
+                        perplexity_instance=perplexity_instance,
+                        prompt=prompt,
+                        chat_id=chat_id,
+                        robot=self,
+                        receiver=receiver,
+                        at_user=at_user
+                    )
+                    
+                    # 添加到线程管理字典
+                    with self._perplexity_lock:
+                        self._perplexity_threads[thread_key] = perplexity_thread
+                    
+                    # 启动线程
+                    perplexity_thread.start()
+                    self.LOG.info(f"已启动Perplexity请求线程: {thread_key}")
+                    
+                    return True
                 else:
-                    self.sendTextMsg("Perplexity服务未配置", msg.roomid, msg.sender)
+                    self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
                     return True
             else:
-                self.sendTextMsg(f"请在{perplexity_trigger}后面添加您的问题", msg.roomid, msg.sender)
+                self.sendTextMsg(f"请在{perplexity_trigger}后面添加您的问题", msg.roomid if msg.from_group() else msg.sender)
                 return True
         
         return self.toChitchat(msg)
@@ -718,27 +745,52 @@ class Robot(Job):
                                 if hasattr(self.config, 'PERPLEXITY') and Perplexity.value_check(self.config.PERPLEXITY):
                                     self.perplexity = Perplexity(self.config.PERPLEXITY)
                                 else:
-                                    self.sendTextMsg("Perplexity服务未配置", msg.sender)
-                                    return
+                                    self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
+                                    return True
                             
                             # 使用现有的chat实例如果它是Perplexity
                             perplexity_instance = self.perplexity if hasattr(self, 'perplexity') else (self.chat if isinstance(self.chat, Perplexity) else None)
                             
                             if perplexity_instance:
-                                self.sendTextMsg("正在查询Perplexity，请稍候...", msg.sender)
-                                response = perplexity_instance.get_answer(prompt, msg.sender)
-                                if response:
-                                    self.sendTextMsg(response, msg.sender)
-                                    return
-                                else:
-                                    self.sendTextMsg("无法从Perplexity获取回答", msg.sender)
-                                    return
+                                chat_id = msg.roomid if msg.from_group() else msg.sender
+                                receiver = msg.roomid if msg.from_group() else msg.sender
+                                at_user = msg.sender if msg.from_group() else None
+                                
+                                # 检查是否已有正在处理的相同请求
+                                thread_key = f"{receiver}_{chat_id}"
+                                with self._perplexity_lock:
+                                    if thread_key in self._perplexity_threads and self._perplexity_threads[thread_key].is_alive():
+                                        self.sendTextMsg("⚠️ 已有一个Perplexity请求正在处理中，请稍后再试", receiver, at_user)
+                                        return True
+                                
+                                # 发送等待消息
+                                self.sendTextMsg("正在查询Perplexity，请稍候...", receiver, at_user)
+                                
+                                # 创建并启动新线程处理请求
+                                perplexity_thread = PerplexityThread(
+                                    perplexity_instance=perplexity_instance,
+                                    prompt=prompt,
+                                    chat_id=chat_id,
+                                    robot=self,
+                                    receiver=receiver,
+                                    at_user=at_user
+                                )
+                                
+                                # 添加到线程管理字典
+                                with self._perplexity_lock:
+                                    self._perplexity_threads[thread_key] = perplexity_thread
+                                
+                                # 启动线程
+                                perplexity_thread.start()
+                                self.LOG.info(f"已启动Perplexity请求线程: {thread_key}")
+                                
+                                return True
                             else:
-                                self.sendTextMsg("Perplexity服务未配置", msg.sender)
-                                return
+                                self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
+                                return True
                         else:
-                            self.sendTextMsg(f"请在{perplexity_trigger}后面添加您的问题", msg.sender)
-                            return
+                            self.sendTextMsg(f"请在{perplexity_trigger}后面添加您的问题", msg.roomid if msg.from_group() else msg.sender)
+                            return True
 
                     self.toChitchat(msg)  # 闲聊
 
@@ -765,7 +817,7 @@ class Robot(Job):
             
             # 如果该聊天没有历史记录，创建一个新的队列
             if chat_id not in self._msg_history:
-                self._msg_history[chat_id] = deque(maxlen=500)
+                self._msg_history[chat_id] = deque(maxlen=200)
                 
             # 获取发送者昵称
             if msg.from_group():
@@ -1141,3 +1193,155 @@ class Robot(Job):
         except Exception as e:
             self.LOG.error(f"重置对话记忆失败: {e}")
             return f"❌ 重置对话记忆失败: {e}"
+
+    def cleanup_perplexity_threads(self):
+        """清理所有Perplexity线程"""
+        with self._perplexity_lock:
+            active_threads = []
+            for thread_key, thread in self._perplexity_threads.items():
+                if thread.is_alive():
+                    active_threads.append(thread_key)
+                    
+            if active_threads:
+                self.LOG.info(f"等待{len(active_threads)}个Perplexity线程结束: {active_threads}")
+                
+                # 等待所有线程结束，但最多等待10秒
+                for i in range(10):
+                    active_count = 0
+                    for thread_key, thread in self._perplexity_threads.items():
+                        if thread.is_alive():
+                            active_count += 1
+                    
+                    if active_count == 0:
+                        break
+                        
+                    time.sleep(1)
+                
+                # 记录未能结束的线程
+                still_active = [thread_key for thread_key, thread in self._perplexity_threads.items() if thread.is_alive()]
+                if still_active:
+                    self.LOG.warning(f"以下Perplexity线程在退出时仍在运行: {still_active}")
+            
+            # 清空线程字典
+            self._perplexity_threads.clear()
+            self.LOG.info("Perplexity线程管理已清理")
+
+# 添加Perplexity处理线程类
+class PerplexityThread(Thread):
+    """处理Perplexity请求的线程"""
+    
+    def __init__(self, perplexity_instance, prompt, chat_id, robot, receiver, at_user=None):
+        """初始化Perplexity处理线程
+        
+        Args:
+            perplexity_instance: Perplexity实例
+            prompt: 查询内容
+            chat_id: 聊天ID
+            robot: Robot实例，用于发送消息
+            receiver: 接收消息的ID
+            at_user: 被@的用户ID
+        """
+        super().__init__(daemon=True)
+        self.perplexity = perplexity_instance
+        self.prompt = prompt
+        self.chat_id = chat_id
+        self.robot = robot
+        self.receiver = receiver
+        self.at_user = at_user
+        self.LOG = logging.getLogger("PerplexityThread")
+        
+        # 检查是否使用reasoning模型
+        self.is_reasoning_model = False
+        if hasattr(self.perplexity, 'config'):
+            model_name = self.perplexity.config.get('model', 'sonar').lower()
+            self.is_reasoning_model = 'reasoning' in model_name
+            self.LOG.info(f"Perplexity使用模型: {model_name}, 是否为reasoning模型: {self.is_reasoning_model}")
+        
+    def run(self):
+        """线程执行函数"""
+        try:
+            self.LOG.info(f"开始处理Perplexity请求: {self.prompt[:30]}...")
+            
+            # 获取回答
+            response = self.perplexity.get_answer(self.prompt, self.chat_id)
+            
+            # 处理sonar-reasoning和sonar-reasoning-pro模型的<think>标签
+            if response:
+                # 只有对reasoning模型才应用清理逻辑
+                if self.is_reasoning_model:
+                    response = self.remove_thinking_content(response)
+                
+                self.robot.sendTextMsg(response, self.receiver, self.at_user)
+            else:
+                self.robot.sendTextMsg("无法从Perplexity获取回答", self.receiver, self.at_user)
+                
+            self.LOG.info(f"Perplexity请求处理完成: {self.prompt[:30]}...")
+            
+        except Exception as e:
+            self.LOG.error(f"处理Perplexity请求时出错: {e}")
+            self.robot.sendTextMsg(f"处理请求时出错: {e}", self.receiver, self.at_user)
+        finally:
+            # 从活动线程列表中移除
+            if hasattr(self.robot, '_perplexity_threads'):
+                thread_key = f"{self.receiver}_{self.chat_id}"
+                if thread_key in self.robot._perplexity_threads:
+                    del self.robot._perplexity_threads[thread_key]
+    
+    def remove_thinking_content(self, text):
+        """移除<think></think>标签之间的思考内容
+        
+        Args:
+            text: 原始响应文本
+            
+        Returns:
+            str: 处理后的文本
+        """
+        try:
+            # 检查是否包含思考标签
+            has_thinking = '<think>' in text or '</think>' in text
+            
+            if has_thinking:
+                self.LOG.info("检测到思考内容标签，准备移除...")
+                
+                # 导入正则表达式库
+                import re
+                
+                # 移除不完整的标签对情况
+                if text.count('<think>') != text.count('</think>'):
+                    self.LOG.warning(f"检测到不匹配的思考标签: <think>数量={text.count('<think>')}, </think>数量={text.count('</think>')}")
+                
+                # 提取思考内容用于日志记录
+                thinking_pattern = re.compile(r'<think>(.*?)</think>', re.DOTALL)
+                thinking_matches = thinking_pattern.findall(text)
+                
+                if thinking_matches:
+                    for i, thinking in enumerate(thinking_matches):
+                        short_thinking = thinking[:100] + '...' if len(thinking) > 100 else thinking
+                        self.LOG.debug(f"思考内容 #{i+1}: {short_thinking}")
+                
+                # 替换所有的<think>...</think>内容 - 使用非贪婪模式
+                cleaned_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+                
+                # 处理不完整的标签
+                cleaned_text = re.sub(r'<think>.*?$', '', cleaned_text, flags=re.DOTALL)  # 处理未闭合的开始标签
+                cleaned_text = re.sub(r'^.*?</think>', '', cleaned_text, flags=re.DOTALL)  # 处理未开始的闭合标签
+                
+                # 处理可能的多余空行
+                cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)
+                
+                # 移除前后空白
+                cleaned_text = cleaned_text.strip()
+                
+                self.LOG.info(f"思考内容已移除，原文本长度: {len(text)} -> 清理后: {len(cleaned_text)}")
+                
+                # 如果清理后文本为空，返回一个提示信息
+                if not cleaned_text:
+                    return "回答内容为空，可能是模型仅返回了思考过程。请重新提问。"
+                
+                return cleaned_text
+            else:
+                return text  # 没有思考标签，直接返回原文本
+                
+        except Exception as e:
+            self.LOG.error(f"清理思考内容时出错: {e}")
+            return text  # 出错时返回原始文本

@@ -113,7 +113,7 @@ class DeepSeek():
             
             # 控制对话长度，保留最近的历史记录
             # 系统消息(如果有) + 最近9轮对话(问答各算一轮)
-            max_history = 19
+            max_history = 11
             if len(self.conversation_list[wxid]) > max_history:
                 has_system = self.conversation_list[wxid][0]["role"] == "system"
                 if has_system:
