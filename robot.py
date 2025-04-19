@@ -634,14 +634,18 @@ class Robot(Job):
             # 添加时间戳和发送者信息到用户消息前面
             current_time = time.strftime("%H:%M", time.localtime())
             
+            # 清理引用内容，去掉换行和多余空格
+            if quoted_content:
+                quoted_content = re.sub(r'\s+', ' ', quoted_content).strip()
+            
             # 构建完整消息，包含用户消息和引用内容（如果有）
             if not user_msg and quoted_content:
                 # 如果没有提取到用户消息但有引用内容，可能是纯引用消息
-                self.LOG.info(f"处理纯引用消息: 用户={sender_name}, 引用={quoted_content}")
+                self.LOG.info(f"处理纯引用消息: 用户={sender_name}, 引用=【{quoted_content}】")
                 q_with_info = f"[{current_time}] {sender_name} 分享了内容: {quoted_content}"
             elif quoted_content:
                 # 有用户消息和引用内容
-                self.LOG.info(f"处理带引用的消息: 用户={sender_name}, 消息={user_msg}, 引用={quoted_content}")
+                self.LOG.info(f"处理带引用的消息: 用户={sender_name}, 消息={user_msg}, 引用=【{quoted_content}】")
                 q_with_info = f"[{current_time}] {sender_name}: {user_msg}\n\n[用户引用] {quoted_content}"
             else:
                 # 只有用户消息
