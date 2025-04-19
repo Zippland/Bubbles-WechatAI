@@ -5,11 +5,10 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from queue import Empty
-from threading import Thread, Lock
+from threading import Thread
 import os
 import random
 import shutil
-from collections import deque  # 添加deque用于消息历史记录
 from base.func_zhipu import ZhiPu
 from image import CogView, AliyunImage, GeminiImage
 
@@ -26,7 +25,8 @@ from base.func_weather import Weather
 from base.func_news import News
 from base.func_tigerbot import TigerBot
 from base.func_xinghuo_web import XinghuoWeb
-from base.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name
+from base.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name, DuelManager
+from base.func_summary import MessageSummary  # 导入新的MessageSummary类
 from configuration import Config
 from constants import ChatType
 from job_mgmt import Job
@@ -45,17 +45,11 @@ class Robot(Job):
         self.wxid = self.wcf.get_self_wxid()
         self.allContacts = self.getAllContacts()
         self._msg_timestamps = []
-        # 决斗线程管理
-        self._duel_thread = None
-        self._duel_lock = Lock()
+        # 创建决斗管理器
+        self.duel_manager = DuelManager(self.sendDuelMsg)
         
-        # Perplexity请求线程管理
-        self._perplexity_threads = {}
-        self._perplexity_lock = Lock()
-        
-        # 消息历史记录 - 存储最近的200条消息
-        self._msg_history = {}  # 使用字典，以群ID或用户ID为键
-        self._msg_history_lock = Lock()  # 添加锁以保证线程安全
+        # 初始化消息总结功能
+        self.message_summary = MessageSummary(max_history=200)
         
         # 初始化所有可能需要的AI模型实例
         self.chat_models = {}
@@ -399,8 +393,8 @@ class Robot(Job):
             # 获取聊天ID
             chat_id = msg.roomid if msg.from_group() else msg.sender
             
-            # 生成总结
-            summary = self._summarize_messages(chat_id)
+            # 使用MessageSummary生成总结
+            summary = self.message_summary.summarize_messages(chat_id, self.chat)
             
             # 发送总结
             if msg.from_group():
@@ -417,7 +411,7 @@ class Robot(Job):
             chat_id = msg.roomid if msg.from_group() else msg.sender
             
             # 清除历史
-            if self._clear_message_history(chat_id):
+            if self.message_summary.clear_message_history(chat_id):
                 if msg.from_group():
                     self.sendTextMsg("✅ 已清除本群的消息历史记录", msg.roomid, msg.sender)
                 else:
@@ -465,7 +459,7 @@ class Robot(Job):
                 challenger_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
                 
                 # 检查并启动决斗线程
-                if not self.start_duel_thread(challenger_name, opponent_name, msg.roomid, True):
+                if not self.duel_manager.start_duel_thread(challenger_name, opponent_name, msg.roomid, True):
                     self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.roomid)
                     return True
                 
@@ -546,51 +540,18 @@ class Robot(Job):
         elif content.startswith(perplexity_trigger):
             prompt = content[len(perplexity_trigger):].strip()
             if prompt:
-                # 获取Perplexity实例
-                if not hasattr(self, 'perplexity'):
-                    if hasattr(self.config, 'PERPLEXITY') and Perplexity.value_check(self.config.PERPLEXITY):
-                        self.perplexity = Perplexity(self.config.PERPLEXITY)
-                    else:
-                        self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
-                        return True
-                
-                # 使用现有的chat实例如果它是Perplexity
-                perplexity_instance = self.perplexity if hasattr(self, 'perplexity') else (self.chat if isinstance(self.chat, Perplexity) else None)
-                
+                # 处理Perplexity请求
+                perplexity_instance = self.get_perplexity_instance()
                 if perplexity_instance:
                     chat_id = msg.roomid if msg.from_group() else msg.sender
-                    receiver = msg.roomid if msg.from_group() else msg.sender
-                    at_user = msg.sender if msg.from_group() else None
-                    
-                    # 检查是否已有正在处理的相同请求
-                    thread_key = f"{receiver}_{chat_id}"
-                    with self._perplexity_lock:
-                        if thread_key in self._perplexity_threads and self._perplexity_threads[thread_key].is_alive():
-                            self.sendTextMsg("⚠️ 已有一个Perplexity请求正在处理中，请稍后再试", receiver, at_user)
-                            return True
-                    
-                    # 发送等待消息
-                    self.sendTextMsg("正在使用Perplexity进行深度研究，请稍候...", receiver, at_user)
-                    
-                    # 创建并启动新线程处理请求
-                    perplexity_thread = PerplexityThread(
-                        perplexity_instance=perplexity_instance,
-                        prompt=prompt,
+                    return perplexity_instance.process_message(
+                        content=content,
                         chat_id=chat_id,
-                        robot=self,
-                        receiver=receiver,
-                        at_user=at_user
+                        sender=msg.sender,
+                        roomid=msg.roomid,
+                        from_group=msg.from_group(),
+                        send_text_func=self.sendTextMsg
                     )
-                    
-                    # 添加到线程管理字典
-                    with self._perplexity_lock:
-                        self._perplexity_threads[thread_key] = perplexity_thread
-                    
-                    # 启动线程
-                    perplexity_thread.start()
-                    self.LOG.info(f"已启动Perplexity请求线程: {thread_key}")
-                    
-                    return True
                 else:
                     self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
                     return True
@@ -942,8 +903,8 @@ class Robot(Job):
         self.sendTextMsg(content, receivers, msg.sender)
         """
         try:
-            # 记录消息到历史记录
-            self._record_message(msg)
+            # 使用MessageSummary记录消息
+            self.message_summary.process_message_from_wxmsg(msg, self.wcf, self.allContacts)
             
             # 根据消息来源选择使用的AI模型
             self._select_model_for_message(msg)
@@ -1006,7 +967,7 @@ class Robot(Job):
                                 challenger_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
                                 
                                 # 检查并启动决斗线程
-                                if not self.start_duel_thread(challenger_name, opponent_name, msg.roomid, True):
+                                if not self.duel_manager.start_duel_thread(challenger_name, opponent_name, msg.roomid, True):
                                     self.sendTextMsg("⚠️ 目前有其他决斗正在进行中，请稍后再试！", msg.roomid)
                                     return True
                                 
@@ -1104,228 +1065,27 @@ class Robot(Job):
                     # Perplexity触发词处理
                     perplexity_trigger = self.config.PERPLEXITY.get('trigger_keyword', 'ask') if hasattr(self.config, 'PERPLEXITY') else 'ask'
                     if msg.content.startswith(perplexity_trigger):
-                        prompt = msg.content[len(perplexity_trigger):].strip()
-                        if prompt:
-                            # 获取Perplexity实例
-                            if not hasattr(self, 'perplexity'):
-                                if hasattr(self.config, 'PERPLEXITY') and Perplexity.value_check(self.config.PERPLEXITY):
-                                    self.perplexity = Perplexity(self.config.PERPLEXITY)
-                                else:
-                                    self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
-                                    return True
-                            
-                            # 使用现有的chat实例如果它是Perplexity
-                            perplexity_instance = self.perplexity if hasattr(self, 'perplexity') else (self.chat if isinstance(self.chat, Perplexity) else None)
-                            
-                            if perplexity_instance:
-                                chat_id = msg.roomid if msg.from_group() else msg.sender
-                                receiver = msg.roomid if msg.from_group() else msg.sender
-                                at_user = msg.sender if msg.from_group() else None
-                                
-                                # 检查是否已有正在处理的相同请求
-                                thread_key = f"{receiver}_{chat_id}"
-                                with self._perplexity_lock:
-                                    if thread_key in self._perplexity_threads and self._perplexity_threads[thread_key].is_alive():
-                                        self.sendTextMsg("⚠️ 已有一个Perplexity请求正在处理中，请稍后再试", receiver, at_user)
-                                        return True
-                                
-                                # 发送等待消息
-                                self.sendTextMsg("正在使用Perplexity进行深度研究，请稍候...", receiver, at_user)
-                                
-                                # 创建并启动新线程处理请求
-                                perplexity_thread = PerplexityThread(
-                                    perplexity_instance=perplexity_instance,
-                                    prompt=prompt,
-                                    chat_id=chat_id,
-                                    robot=self,
-                                    receiver=receiver,
-                                    at_user=at_user
-                                )
-                                
-                                # 添加到线程管理字典
-                                with self._perplexity_lock:
-                                    self._perplexity_threads[thread_key] = perplexity_thread
-                                
-                                # 启动线程
-                                perplexity_thread.start()
-                                self.LOG.info(f"已启动Perplexity请求线程: {thread_key}")
-                                
-                                return True
-                            else:
-                                self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
+                        # 处理Perplexity请求
+                        perplexity_instance = self.get_perplexity_instance()
+                        if perplexity_instance:
+                            chat_id = msg.roomid if msg.from_group() else msg.sender
+                            if perplexity_instance.process_message(
+                                content=msg.content,
+                                chat_id=chat_id,
+                                sender=msg.sender,
+                                roomid=msg.roomid,
+                                from_group=msg.from_group(),
+                                send_text_func=self.sendTextMsg
+                            ):
                                 return True
                         else:
-                            self.sendTextMsg(f"请在{perplexity_trigger}后面添加您的问题", msg.roomid if msg.from_group() else msg.sender)
+                            self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
                             return True
 
                     self.toChitchat(msg)  # 闲聊
 
         except Exception as e:
             self.LOG.error(f"处理消息时发生错误: {e}")
-
-    def _record_message(self, msg: WxMsg) -> None:
-        """记录消息到历史记录
-        
-        Args:
-            msg: 微信消息
-        """
-        # 跳过特定类型的消息
-        if msg.type != 0x01:  # 只记录文本消息
-            return
-            
-        # 跳过自己发送的消息
-        if msg.from_self():
-            return
-            
-        with self._msg_history_lock:
-            # 获取接收者ID（群ID或用户ID）
-            chat_id = msg.roomid if msg.from_group() else msg.sender
-            
-            # 如果该聊天没有历史记录，创建一个新的队列
-            if chat_id not in self._msg_history:
-                self._msg_history[chat_id] = deque(maxlen=200)
-                
-            # 获取发送者昵称
-            if msg.from_group():
-                sender_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
-            else:
-                sender_name = self.allContacts.get(msg.sender, msg.sender)
-                
-            # 记录消息，包含发送者昵称和内容
-            self._msg_history[chat_id].append({
-                "sender": sender_name,
-                "content": msg.content,
-                "time": time.strftime("%H:%M", time.localtime())
-            })
-    
-    def _clear_message_history(self, chat_id: str) -> bool:
-        """清除指定聊天的消息历史记录
-        
-        Args:
-            chat_id: 聊天ID（群ID或用户ID）
-            
-        Returns:
-            bool: 是否成功清除
-        """
-        with self._msg_history_lock:
-            if chat_id in self._msg_history:
-                self._msg_history[chat_id].clear()
-                return True
-            return False
-    
-    def _summarize_messages(self, chat_id: str) -> str:
-        """生成消息总结
-        
-        Args:
-            chat_id: 聊天ID（群ID或用户ID）
-            
-        Returns:
-            str: 消息总结
-        """
-        with self._msg_history_lock:
-            if chat_id not in self._msg_history or not self._msg_history[chat_id]:
-                return "没有可以总结的历史消息。"
-                
-            # 复制历史消息，以防在处理过程中有变动
-            messages = list(self._msg_history[chat_id])
-            
-        # 如果没有消息模型，返回基本总结
-        if not self.chat:
-            return self._basic_summarize(messages)
-            
-        # 使用AI模型生成总结
-        return self._ai_summarize(messages, chat_id)
-    
-    def _basic_summarize(self, messages: list) -> str:
-        """基本的消息总结逻辑，不使用AI
-        
-        Args:
-            messages: 消息列表
-            
-        Returns:
-            str: 消息总结
-        """
-        if not messages:
-            return "没有可以总结的历史消息。"
-            
-        # 统计每个发送者的消息数量
-        sender_counts = {}
-        for msg in messages:
-            sender = msg["sender"]
-            if sender not in sender_counts:
-                sender_counts[sender] = 0
-            sender_counts[sender] += 1
-            
-        # 生成总结
-        summary_lines = ["📋 最近消息总结："]
-        summary_lines.append(f"总共有 {len(messages)} 条消息")
-        summary_lines.append("\n发言统计：")
-        
-        for sender, count in sorted(sender_counts.items(), key=lambda x: x[1], reverse=True):
-            summary_lines.append(f"- {sender}: {count}条消息")
-            
-        # 添加最近的几条消息作为示例
-        recent_msgs = messages[-5:]  # 最近5条
-        summary_lines.append("\n最近消息示例：")
-        for msg in recent_msgs:
-            summary_lines.append(f"[{msg['time']}] {msg['sender']}: {msg['content'][:30]}...")
-            
-        return "\n".join(summary_lines)
-    
-    def _ai_summarize(self, messages: list, chat_id: str) -> str:
-        """使用AI模型生成消息总结
-        
-        Args:
-            messages: 消息列表
-            chat_id: 聊天ID
-            
-        Returns:
-            str: 消息总结
-        """
-        if not messages:
-            return "没有可以总结的历史消息。"
-            
-        # 构建用于AI总结的消息格式
-        formatted_msgs = []
-        for msg in messages:
-            formatted_msgs.append(f"[{msg['time']}] {msg['sender']}: {msg['content']}")
-        
-        # 构建提示词 - 更加客观、中立
-        prompt = (
-            "下面是一组聊天消息记录。请提供一个客观的总结，包括：\n"
-            "- 主要参与者\n"
-            "- 讨论的主要话题\n"
-            "- 关键信息和要点\n\n"
-            "请直接给出总结内容，不要添加额外的评论或人格色彩。\n\n"
-            "消息记录:\n" + "\n".join(formatted_msgs)
-        )
-        
-        # 使用AI模型生成总结 - 创建一个临时的聊天会话ID，避免污染正常对话上下文
-        try:
-            # 对于支持新会话参数的模型，使用特殊标记告知这是独立的总结请求
-            if hasattr(self.chat, 'get_answer_with_context') and callable(getattr(self.chat, 'get_answer_with_context')):
-                # 使用带上下文参数的方法
-                summary = self.chat.get_answer_with_context(prompt, "summary_" + chat_id, clear_context=True)
-            else:
-                # 普通方法，使用特殊会话ID
-                summary = self.chat.get_answer(prompt, "summary_" + chat_id)
-                
-            if not summary:
-                return self._basic_summarize(messages)
-                
-            return "📋 消息总结：\n\n" + summary
-        except Exception as e:
-            self.LOG.error(f"使用AI生成总结失败: {e}")
-            return self._basic_summarize(messages)
-
-    def onMsg(self, msg: WxMsg) -> int:
-        try:
-            self.LOG.info(msg)
-            self.processMsg(msg)
-        except Exception as e:
-            self.LOG.error(e)
-
-        return 0
 
     def enableRecvMsg(self) -> None:
         self.wcf.enable_recv_msg(self.onMsg)
@@ -1441,68 +1201,9 @@ class Robot(Job):
         :param receiver: 接收人wxid或者群id
         """
         try:
-            self.LOG.info(f"发送决斗消息 To {receiver}: {msg[:20]}...")
             self.wcf.send_text(f"{msg}", receiver, "")
         except Exception as e:
             self.LOG.error(f"发送决斗消息失败: {e}")
-
-    def run_duel(self, challenger_name, opponent_name, receiver, is_group=False):
-        """在单独线程中运行决斗
-        
-        Args:
-            challenger_name: 挑战者名称
-            opponent_name: 对手名称
-            receiver: 消息接收者(群id或者个人wxid)
-            is_group: 是否是群聊
-        """
-        try:
-            # 确保只在群聊中运行决斗
-            if not is_group:
-                self.sendDuelMsg("❌ 决斗功能只支持群聊", receiver)
-                return
-                
-            # 开始决斗
-            self.sendDuelMsg("⚔️ 决斗即将开始，请稍等...", receiver)
-            # 传递群组ID参数
-            group_id = receiver
-            duel_steps = start_duel(challenger_name, opponent_name, group_id, True)  # challenger_name是发起者
-            
-            # 逐步发送决斗过程
-            for step in duel_steps:
-                self.sendDuelMsg(step, receiver)
-                time.sleep(1.5)  # 每步之间添加适当延迟
-        except Exception as e:
-            self.LOG.error(f"决斗过程中发生错误: {e}")
-            self.sendDuelMsg(f"决斗过程中发生错误: {e}", receiver)
-        finally:
-            # 释放决斗线程
-            with self._duel_lock:
-                self._duel_thread = None
-            self.LOG.info("决斗线程已结束并销毁")
-    
-    def start_duel_thread(self, challenger_name, opponent_name, receiver, is_group=False):
-        """启动决斗线程
-        
-        Args:
-            challenger_name: 挑战者名称
-            opponent_name: 对手名称
-            receiver: 消息接收者
-            is_group: 是否是群聊
-            
-        Returns:
-            bool: 是否成功启动决斗线程
-        """
-        with self._duel_lock:
-            if self._duel_thread is not None and self._duel_thread.is_alive():
-                return False
-            
-            self._duel_thread = Thread(
-                target=self.run_duel,
-                args=(challenger_name, opponent_name, receiver, is_group),
-                daemon=True
-            )
-            self._duel_thread.start()
-            return True
 
     def _reset_chat_memory(self, chat_id: str) -> str:
         """重置特定聊天的AI对话记忆
@@ -1567,35 +1268,49 @@ class Robot(Job):
 
     def cleanup_perplexity_threads(self):
         """清理所有Perplexity线程"""
-        with self._perplexity_lock:
-            active_threads = []
-            for thread_key, thread in self._perplexity_threads.items():
-                if thread.is_alive():
-                    active_threads.append(thread_key)
-                    
-            if active_threads:
-                self.LOG.info(f"等待{len(active_threads)}个Perplexity线程结束: {active_threads}")
+        # 如果已初始化Perplexity实例，调用其清理方法
+        perplexity_instance = self.get_perplexity_instance()
+        if perplexity_instance:
+            perplexity_instance.cleanup()
+        
+        # 检查并等待决斗线程结束
+        if hasattr(self, 'duel_manager') and self.duel_manager.is_duel_running():
+            self.LOG.info("等待决斗线程结束...")
+            # 最多等待5秒
+            for i in range(5):
+                if not self.duel_manager.is_duel_running():
+                    break
+                time.sleep(1)
                 
-                # 等待所有线程结束，但最多等待10秒
-                for i in range(10):
-                    active_count = 0
-                    for thread_key, thread in self._perplexity_threads.items():
-                        if thread.is_alive():
-                            active_count += 1
-                    
-                    if active_count == 0:
-                        break
-                        
-                    time.sleep(1)
+            if self.duel_manager.is_duel_running():
+                self.LOG.warning("决斗线程在退出时仍在运行")
+            else:
+                self.LOG.info("决斗线程已结束")
                 
-                # 记录未能结束的线程
-                still_active = [thread_key for thread_key, thread in self._perplexity_threads.items() if thread.is_alive()]
-                if still_active:
-                    self.LOG.warning(f"以下Perplexity线程在退出时仍在运行: {still_active}")
+    def get_perplexity_instance(self):
+        """获取Perplexity实例
+        
+        Returns:
+            Perplexity: Perplexity实例，如果未配置则返回None
+        """
+        # 检查是否已有Perplexity实例
+        if hasattr(self, 'perplexity'):
+            return self.perplexity
             
-            # 清空线程字典
-            self._perplexity_threads.clear()
-            self.LOG.info("Perplexity线程管理已清理")
+        # 检查config中是否有Perplexity配置
+        if hasattr(self.config, 'PERPLEXITY') and Perplexity.value_check(self.config.PERPLEXITY):
+            self.perplexity = Perplexity(self.config.PERPLEXITY)
+            return self.perplexity
+            
+        # 检查chat是否是Perplexity类型
+        if isinstance(self.chat, Perplexity):
+            return self.chat
+            
+        # 如果存在chat_models字典，尝试从中获取
+        if hasattr(self, 'chat_models') and ChatType.PERPLEXITY.value in self.chat_models:
+            return self.chat_models[ChatType.PERPLEXITY.value]
+            
+        return None
 
     def _select_model_for_message(self, msg: WxMsg) -> None:
         """根据消息来源选择对应的AI模型
@@ -1651,160 +1366,11 @@ class Robot(Job):
         if self.default_model_id in self.chat_models:
             self.chat = self.chat_models[self.default_model_id]
 
-# 添加Perplexity处理线程类
-class PerplexityThread(Thread):
-    """处理Perplexity请求的线程"""
-    
-    def __init__(self, perplexity_instance, prompt, chat_id, robot, receiver, at_user=None):
-        """初始化Perplexity处理线程
-        
-        Args:
-            perplexity_instance: Perplexity实例
-            prompt: 查询内容
-            chat_id: 聊天ID
-            robot: Robot实例，用于发送消息
-            receiver: 接收消息的ID
-            at_user: 被@的用户ID
-        """
-        super().__init__(daemon=True)
-        self.perplexity = perplexity_instance
-        self.prompt = prompt
-        self.chat_id = chat_id
-        self.robot = robot
-        self.receiver = receiver
-        self.at_user = at_user
-        self.LOG = logging.getLogger("PerplexityThread")
-        
-        # 检查是否使用reasoning模型
-        self.is_reasoning_model = False
-        if hasattr(self.perplexity, 'config'):
-            model_name = self.perplexity.config.get('model', 'sonar').lower()
-            self.is_reasoning_model = 'reasoning' in model_name
-            self.LOG.info(f"Perplexity使用模型: {model_name}, 是否为reasoning模型: {self.is_reasoning_model}")
-        
-    def run(self):
-        """线程执行函数"""
+    def onMsg(self, msg: WxMsg) -> int:
         try:
-            self.LOG.info(f"开始处理Perplexity请求: {self.prompt[:30]}...")
-            
-            # 获取回答
-            response = self.perplexity.get_answer(self.prompt, self.chat_id)
-            
-            # 处理sonar-reasoning和sonar-reasoning-pro模型的<think>标签
-            if response:
-                # 只有对reasoning模型才应用清理逻辑
-                if self.is_reasoning_model:
-                    response = self.remove_thinking_content(response)
-                
-                # 移除Markdown格式符号
-                response = self.remove_markdown_formatting(response)
-                
-                self.robot.sendTextMsg(response, self.receiver, self.at_user)
-            else:
-                self.robot.sendTextMsg("无法从Perplexity获取回答", self.receiver, self.at_user)
-                
-            self.LOG.info(f"Perplexity请求处理完成: {self.prompt[:30]}...")
-            
+            self.LOG.info(msg)
+            self.processMsg(msg)
         except Exception as e:
-            self.LOG.error(f"处理Perplexity请求时出错: {e}")
-            self.robot.sendTextMsg(f"处理请求时出错: {e}", self.receiver, self.at_user)
-        finally:
-            # 从活动线程列表中移除
-            if hasattr(self.robot, '_perplexity_threads'):
-                thread_key = f"{self.receiver}_{self.chat_id}"
-                if thread_key in self.robot._perplexity_threads:
-                    del self.robot._perplexity_threads[thread_key]
-    
-    def remove_thinking_content(self, text):
-        """移除<think></think>标签之间的思考内容
-        
-        Args:
-            text: 原始响应文本
-            
-        Returns:
-            str: 处理后的文本
-        """
-        try:
-            # 检查是否包含思考标签
-            has_thinking = '<think>' in text or '</think>' in text
-            
-            if has_thinking:
-                self.LOG.info("检测到思考内容标签，准备移除...")
-                
-                # 导入正则表达式库
-                import re
-                
-                # 移除不完整的标签对情况
-                if text.count('<think>') != text.count('</think>'):
-                    self.LOG.warning(f"检测到不匹配的思考标签: <think>数量={text.count('<think>')}, </think>数量={text.count('</think>')}")
-                
-                # 提取思考内容用于日志记录
-                thinking_pattern = re.compile(r'<think>(.*?)</think>', re.DOTALL)
-                thinking_matches = thinking_pattern.findall(text)
-                
-                if thinking_matches:
-                    for i, thinking in enumerate(thinking_matches):
-                        short_thinking = thinking[:100] + '...' if len(thinking) > 100 else thinking
-                        self.LOG.debug(f"思考内容 #{i+1}: {short_thinking}")
-                
-                # 替换所有的<think>...</think>内容 - 使用非贪婪模式
-                cleaned_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-                
-                # 处理不完整的标签
-                cleaned_text = re.sub(r'<think>.*?$', '', cleaned_text, flags=re.DOTALL)  # 处理未闭合的开始标签
-                cleaned_text = re.sub(r'^.*?</think>', '', cleaned_text, flags=re.DOTALL)  # 处理未开始的闭合标签
-                
-                # 处理可能的多余空行
-                cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)
-                
-                # 移除前后空白
-                cleaned_text = cleaned_text.strip()
-                
-                self.LOG.info(f"思考内容已移除，原文本长度: {len(text)} -> 清理后: {len(cleaned_text)}")
-                
-                # 如果清理后文本为空，返回一个提示信息
-                if not cleaned_text:
-                    return "回答内容为空，可能是模型仅返回了思考过程。请重新提问。"
-                
-                return cleaned_text
-            else:
-                return text  # 没有思考标签，直接返回原文本
-                
-        except Exception as e:
-            self.LOG.error(f"清理思考内容时出错: {e}")
-            return text  # 出错时返回原始文本
-            
-    def remove_markdown_formatting(self, text):
-        """移除Markdown格式符号，如*和#
-        
-        Args:
-            text: 包含Markdown格式的文本
-            
-        Returns:
-            str: 移除Markdown格式后的文本
-        """
-        try:
-            # 导入正则表达式库
-            import re
-            
-            self.LOG.info("开始移除Markdown格式符号...")
-            
-            # 保存原始文本长度
-            original_length = len(text)
-            
-            # 移除标题符号 (#)
-            # 替换 # 开头的标题，保留文本内容
-            cleaned_text = re.sub(r'^\s*#{1,6}\s+(.+)$', r'\1', text, flags=re.MULTILINE)
-            
-            # 移除强调符号 (*)
-            # 替换 **粗体** 和 *斜体* 格式，保留文本内容
-            cleaned_text = re.sub(r'\*\*(.*?)\*\*', r'\1', cleaned_text)
-            cleaned_text = re.sub(r'\*(.*?)\*', r'\1', cleaned_text)
-            
-            self.LOG.info(f"Markdown格式符号已移除，原文本长度: {original_length} -> 清理后: {len(cleaned_text)}")
-            
-            return cleaned_text
-            
-        except Exception as e:
-            self.LOG.error(f"移除Markdown格式符号时出错: {e}")
-            return text  # 出错时返回原始文本
+            self.LOG.error(e)
+
+        return 0

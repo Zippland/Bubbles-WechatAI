@@ -4,6 +4,7 @@ import time
 import json
 import os
 from typing import List, Dict, Tuple, Optional, Any
+from threading import Thread, Lock
 
 # 排位积分系统
 class DuelRankSystem:
@@ -877,3 +878,98 @@ def change_player_name(old_name: str, new_name: str, group_id=None) -> str:
     except Exception as e:
         logging.error(f"更改玩家名称失败: {e}")
         return f"❌ 更改玩家名称失败: {e}"
+
+class DuelManager:
+    """决斗管理器，处理决斗线程和消息发送"""
+    
+    def __init__(self, message_sender_func):
+        """
+        初始化决斗管理器
+        
+        Args:
+            message_sender_func: 消息发送函数，接收(message, receiver)两个参数
+        """
+        self.message_sender = message_sender_func
+        self._duel_thread = None
+        self._duel_lock = Lock()
+        self.LOG = logging.getLogger("DuelManager")
+    
+    def send_duel_message(self, msg: str, receiver: str) -> None:
+        """发送决斗消息
+        
+        Args:
+            msg: 消息内容
+            receiver: 接收者ID（通常是群ID）
+        """
+        try:
+            self.LOG.info(f"发送决斗消息 To {receiver}: {msg[:20]}...")
+            self.message_sender(msg, receiver)
+        except Exception as e:
+            self.LOG.error(f"发送决斗消息失败: {e}")
+    
+    def run_duel(self, challenger_name, opponent_name, receiver, is_group=False):
+        """在单独线程中运行决斗
+        
+        Args:
+            challenger_name: 挑战者名称
+            opponent_name: 对手名称
+            receiver: 消息接收者(群id)
+            is_group: 是否是群聊
+        """
+        try:
+            # 确保只在群聊中运行决斗
+            if not is_group:
+                self.send_duel_message("❌ 决斗功能只支持群聊", receiver)
+                return
+                
+            # 开始决斗
+            self.send_duel_message("⚔️ 决斗即将开始，请稍等...", receiver)
+            # 传递群组ID参数
+            group_id = receiver
+            duel_steps = start_duel(challenger_name, opponent_name, group_id, True)  # challenger_name是发起者
+            
+            # 逐步发送决斗过程
+            for step in duel_steps:
+                self.send_duel_message(step, receiver)
+                time.sleep(1.5)  # 每步之间添加适当延迟
+        except Exception as e:
+            self.LOG.error(f"决斗过程中发生错误: {e}")
+            self.send_duel_message(f"决斗过程中发生错误: {e}", receiver)
+        finally:
+            # 释放决斗线程
+            with self._duel_lock:
+                self._duel_thread = None
+            self.LOG.info("决斗线程已结束并销毁")
+    
+    def start_duel_thread(self, challenger_name, opponent_name, receiver, is_group=False):
+        """启动决斗线程
+        
+        Args:
+            challenger_name: 挑战者名称
+            opponent_name: 对手名称
+            receiver: 消息接收者
+            is_group: 是否是群聊
+            
+        Returns:
+            bool: 是否成功启动决斗线程
+        """
+        with self._duel_lock:
+            if self._duel_thread is not None and self._duel_thread.is_alive():
+                return False
+            
+            self._duel_thread = Thread(
+                target=self.run_duel,
+                args=(challenger_name, opponent_name, receiver, is_group),
+                daemon=True
+            )
+            self._duel_thread.start()
+            return True
+    
+    def is_duel_running(self):
+        """检查是否有决斗正在进行
+        
+        Returns:
+            bool: 是否有决斗正在进行
+        """
+        with self._duel_lock:
+            return self._duel_thread is not None and self._duel_thread.is_alive()
