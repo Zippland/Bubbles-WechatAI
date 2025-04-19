@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict, Callable, List
 import os
 from threading import Thread, Lock
 from openai import OpenAI
@@ -271,6 +271,13 @@ class Perplexity:
         self.trigger_keyword = config.get('trigger_keyword', 'ask')
         self.LOG = logging.getLogger('Perplexity')
         
+        # 权限控制 - 允许使用Perplexity的群聊和个人ID
+        self.allowed_groups = config.get('allowed_groups', [])
+        self.allowed_users = config.get('allowed_users', [])
+        
+        # 可选的全局白名单模式 - 如果为True，则允许所有群聊和用户使用Perplexity
+        self.allow_all = config.get('allow_all', False)
+        
         # 设置编码环境变量，确保处理Unicode字符
         os.environ["PYTHONIOENCODING"] = "utf-8"
         
@@ -292,10 +299,40 @@ class Perplexity:
                     os.environ["HTTP_PROXY"] = self.proxy
                 
                 self.LOG.info("Perplexity 客户端已初始化")
+                
+                # 记录权限配置信息
+                if self.allow_all:
+                    self.LOG.info("Perplexity配置为允许所有群聊和用户访问")
+                else:
+                    self.LOG.info(f"Perplexity允许的群聊: {len(self.allowed_groups)}个")
+                    self.LOG.info(f"Perplexity允许的用户: {len(self.allowed_users)}个")
+                
             except Exception as e:
                 self.LOG.error(f"初始化Perplexity客户端失败: {str(e)}")
         else:
             self.LOG.warning("未配置Perplexity API密钥")
+            
+    def is_allowed(self, chat_id, sender, from_group):
+        """检查是否允许使用Perplexity功能
+        
+        Args:
+            chat_id: 聊天ID（群ID或用户ID）
+            sender: 发送者ID
+            from_group: 是否来自群聊
+            
+        Returns:
+            bool: 是否允许使用Perplexity
+        """
+        # 全局白名单模式
+        if self.allow_all:
+            return True
+            
+        # 群聊消息
+        if from_group:
+            return chat_id in self.allowed_groups
+        # 私聊消息
+        else:
+            return sender in self.allowed_users
             
     @staticmethod
     def value_check(args: dict) -> bool:
@@ -354,10 +391,17 @@ class Perplexity:
             send_text_func: 发送消息的函数
             
         Returns:
-            bool: 是否已处理该消息
+            bool: 是否已处理该消息；返回False表示需要由普通AI处理
         """
         # 检查是否包含触发词
         if content.startswith(self.trigger_keyword):
+            # 检查权限
+            if not self.is_allowed(chat_id, sender, from_group):
+                # 不在允许列表中，返回False让普通AI处理请求
+                # 不要发送任何提示信息，完全隐藏功能
+                self.LOG.info(f"用户/群聊 {chat_id} 无Perplexity权限，转由普通AI处理")
+                return False
+                
             prompt = content[len(self.trigger_keyword):].strip()
             if prompt:
                 # 确定接收者和@用户
