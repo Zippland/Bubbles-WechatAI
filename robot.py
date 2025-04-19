@@ -1559,6 +1559,9 @@ class PerplexityThread(Thread):
                 if self.is_reasoning_model:
                     response = self.remove_thinking_content(response)
                 
+                # 移除Markdown格式符号
+                response = self.remove_markdown_formatting(response)
+                
                 self.robot.sendTextMsg(response, self.receiver, self.at_user)
             else:
                 self.robot.sendTextMsg("无法从Perplexity获取回答", self.receiver, self.at_user)
@@ -1632,4 +1635,39 @@ class PerplexityThread(Thread):
                 
         except Exception as e:
             self.LOG.error(f"清理思考内容时出错: {e}")
+            return text  # 出错时返回原始文本
+            
+    def remove_markdown_formatting(self, text):
+        """移除Markdown格式符号，如*和#
+        
+        Args:
+            text: 包含Markdown格式的文本
+            
+        Returns:
+            str: 移除Markdown格式后的文本
+        """
+        try:
+            # 导入正则表达式库
+            import re
+            
+            self.LOG.info("开始移除Markdown格式符号...")
+            
+            # 保存原始文本长度
+            original_length = len(text)
+            
+            # 移除标题符号 (#)
+            # 替换 # 开头的标题，保留文本内容
+            cleaned_text = re.sub(r'^\s*#{1,6}\s+(.+)$', r'\1', text, flags=re.MULTILINE)
+            
+            # 移除强调符号 (*)
+            # 替换 **粗体** 和 *斜体* 格式，保留文本内容
+            cleaned_text = re.sub(r'\*\*(.*?)\*\*', r'\1', cleaned_text)
+            cleaned_text = re.sub(r'\*(.*?)\*', r'\1', cleaned_text)
+            
+            self.LOG.info(f"Markdown格式符号已移除，原文本长度: {original_length} -> 清理后: {len(cleaned_text)}")
+            
+            return cleaned_text
+            
+        except Exception as e:
+            self.LOG.error(f"移除Markdown格式符号时出错: {e}")
             return text  # 出错时返回原始文本
