@@ -7,6 +7,7 @@ from collections import deque
 # from threading import Lock  # 不再需要锁，使用SQLite的事务机制
 import sqlite3  # 添加sqlite3模块
 import os  # 用于处理文件路径
+from base.func_xml_process import XmlProcessor  # 导入XmlProcessor
 
 class MessageSummary:
     """消息总结功能类 (使用SQLite持久化)
@@ -23,6 +24,9 @@ class MessageSummary:
         self.LOG = logging.getLogger("MessageSummary")
         self.max_history = max_history
         self.db_path = db_path
+        
+        # 实例化XML处理器用于提取引用消息
+        self.xml_processor = XmlProcessor(self.LOG)
         
         # 移除旧的内存存储相关代码
         # self._msg_history = {}  # 使用字典，以群ID或用户ID为键
@@ -217,29 +221,12 @@ class MessageSummary:
         if not messages:
             return "没有可以总结的历史消息。"
             
-        # 统计每个发送者的消息数量
-        sender_counts = {}
+        # 构建总结
+        res = ["以下是近期聊天记录摘要：\n"]
         for msg in messages:
-            sender = msg["sender"]
-            if sender not in sender_counts:
-                sender_counts[sender] = 0
-            sender_counts[sender] += 1
+            res.append(f"[{msg['time']}]{msg['sender']}: {msg['content']}")
             
-        # 生成总结
-        summary_lines = ["📋 最近消息总结："]
-        summary_lines.append(f"总共有 {len(messages)} 条消息")
-        summary_lines.append("\n发言统计：")
-        
-        for sender, count in sorted(sender_counts.items(), key=lambda x: x[1], reverse=True):
-            summary_lines.append(f"- {sender}: {count}条消息")
-            
-        # 添加最近的几条消息作为示例
-        recent_msgs = messages[-5:]  # 最近5条
-        summary_lines.append("\n最近消息示例：")
-        for msg in recent_msgs:
-            summary_lines.append(f"[{msg['time']}] {msg['sender']}: {msg['content'][:30]}...")
-            
-        return "\n".join(summary_lines)
+        return "\n".join(res)
     
     def _ai_summarize(self, messages, chat_model, chat_id):
         """使用AI模型生成消息总结
@@ -258,7 +245,7 @@ class MessageSummary:
         # 构建用于AI总结的消息格式
         formatted_msgs = []
         for msg in messages:
-            formatted_msgs.append(f"[{msg['time']}] {msg['sender']}: {msg['content']}")
+            formatted_msgs.append(f"[{msg['time']}]{msg['sender']}: {msg['content']}")
         
         # 构建提示词 - 更加客观、中立
         prompt = (
@@ -311,85 +298,28 @@ class MessageSummary:
         else:
             return self._basic_summarize(messages)
     
-    def _extract_new_content_from_quote(self, content):
-        """从引用消息中提取新内容
-        
-        Args:
-            content: 原始消息内容
-            
-        Returns:
-            str: 提取出的新内容，如果无法提取则返回原始内容
-        """
-        try:
-            # 检查是否为引用消息
-            if "<refermsg>" not in content:
-                return content
-                
-            # 查找XML开始位置
-            xml_start_tags = ["<msg>", "<appmsg", "<?xml", "<refermsg>"]
-            xml_start_index = -1
-            
-            for tag in xml_start_tags:
-                pos = content.find(tag)
-                if pos >= 0:
-                    xml_start_index = pos
-                    break
-                    
-            # 如果找到了XML开始位置且不在开头，说明前面部分是新消息
-            if xml_start_index > 0:
-                new_content = content[:xml_start_index].strip()
-                
-                # 清理@提及 (微信@后面通常有特殊空格\u2005)
-                if new_content.startswith("@") and '\u2005' in new_content:
-                    mention_end = new_content.find('\u2005')
-                    if mention_end != -1:
-                        new_content = new_content[mention_end + 1:].strip()
-                
-                # 如果清理后内容不为空，返回它
-                if new_content:
-                    return new_content
-            
-            # 如果无法提取新内容，返回原始内容
-            return content
-            
-        except Exception as e:
-            self.LOG.error(f"提取引用消息新内容时出错: {e}")
-            return content  # 出错时返回原始内容
-    
     def process_message_from_wxmsg(self, msg, wcf, all_contacts, bot_wxid=None):
-        """从微信消息对象中处理并记录消息
-        
+        """从微信消息对象中处理并记录与总结相关的文本消息
+        使用 XmlProcessor 提取用户实际输入的新内容或卡片标题。
+
         Args:
             msg: 微信消息对象(WxMsg)
             wcf: 微信接口对象
             all_contacts: 所有联系人字典
             bot_wxid: 机器人自己的wxid，用于检测@机器人的消息
         """
-        # 只记录群聊消息
+        # 1. 基本筛选：只记录群聊中的、非自己发送的文本消息或App消息
         if not msg.from_group():
             return
-            
-        # 跳过特定类型的消息
-        if msg.type != 0x01:  # 只记录文本消息
+        if msg.type != 0x01 and msg.type != 49:  # 只记录文本消息和App消息(包括引用消息)
             return
-            
-        # 跳过自己发送的消息
         if msg.from_self():
             return
-            
-        # 获取群聊ID
+
         chat_id = msg.roomid
-        
-        # 获取发送者昵称
-        sender_name = wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
-        if not sender_name:  # 如果没有群昵称，尝试获取微信昵称
-            sender_data = all_contacts.get(msg.sender)
-            sender_name = sender_data if sender_data else msg.sender  # 最后使用wxid
-            
-        # 获取消息内容
-        original_content = msg.content
-        
-        # 如果提供了机器人wxid，检查是否是@机器人的消息
+
+        # 2. 检查是否 @机器人 (如果提供了 bot_wxid)
+        original_content = msg.content  # 获取原始content用于检测@和后续处理
         if bot_wxid:
             # 获取机器人在群里的昵称
             bot_name_in_group = wcf.get_alias_in_chatroom(bot_wxid, chat_id)
@@ -405,16 +335,160 @@ class MessageSummary:
                 return
                 
             # 使用正则表达式匹配更复杂的情况（考虑特殊空格）
-            if re.search(rf"@{re.escape(bot_name_in_group)}(\u2005|\\s|$)", original_content):
+            if re.search(rf"@{re.escape(bot_name_in_group)}(\u2005|\s|$)", original_content):
                 self.LOG.debug(f"通过正则跳过包含@机器人的消息: {original_content[:30]}...")
                 return
-        
-        # 对于引用消息，提取新的内容部分
-        if "<refermsg>" in original_content:
-            content_to_record = self._extract_new_content_from_quote(original_content)
-            self.LOG.debug(f"处理引用消息: 原始长度={len(original_content)}, 提取后长度={len(content_to_record)}")
-        else:
-            content_to_record = original_content
+
+        # 3. 使用 XmlProcessor 提取消息详情
+        try:
+            extracted_data = self.xml_processor.extract_quoted_message(msg)
+        except Exception as e:
+            self.LOG.error(f"使用XmlProcessor提取消息内容时出错 (msg.id={msg.id}): {e}")
+            return  # 出错时，保守起见，不记录
+
+        # 4. 确定要记录的内容 (content_to_record)
+        content_to_record = ""
+        source_info = "未知来源"
+
+        # 优先使用提取到的新内容 (来自回复或普通文本或<title>)
+        if extracted_data.get("new_content", "").strip():
+            content_to_record = extracted_data["new_content"].strip()
+            source_info = "来自 new_content (回复/文本/标题)"
             
-        # 记录消息
-        self.record_message(chat_id, sender_name, content_to_record) 
+            # 如果是引用类型消息，添加引用标记和引用内容的简略信息
+            if extracted_data.get("has_quote", False):
+                quoted_sender = extracted_data.get("quoted_sender", "")
+                quoted_content = extracted_data.get("quoted_content", "")
+                
+                # 处理被引用内容
+                if quoted_content:
+                    # 对较长的引用内容进行截断
+                    max_quote_length = 30
+                    if len(quoted_content) > max_quote_length:
+                        quoted_content = quoted_content[:max_quote_length] + "..."
+                    
+                    # 如果被引用的是卡片，则使用标准卡片格式
+                    if extracted_data.get("quoted_is_card", False):
+                        quoted_card_title = extracted_data.get("quoted_card_title", "")
+                        quoted_card_type = extracted_data.get("quoted_card_type", "")
+                        
+                        # 根据卡片类型确定内容类型
+                        card_type = "卡片"
+                        if "链接" in quoted_card_type or "消息" in quoted_card_type:
+                            card_type = "链接"
+                        elif "视频" in quoted_card_type or "音乐" in quoted_card_type:
+                            card_type = "媒体"
+                        elif "位置" in quoted_card_type:
+                            card_type = "位置"
+                        elif "图片" in quoted_card_type:
+                            card_type = "图片"
+                        elif "文件" in quoted_card_type:
+                            card_type = "文件"
+                            
+                        # 整个卡片内容包裹在【】中
+                        quoted_content = f"【{card_type}: {quoted_card_title}】"
+                    
+                    # 根据是否有被引用者信息构建引用前缀
+                    if quoted_sender:
+                        # 添加带引用人的引用格式，将新内容放在前面，引用内容放在后面
+                        content_to_record = f"{content_to_record} 【回复 {quoted_sender}：{quoted_content}】"
+                    else:
+                        # 仅添加引用内容，将新内容放在前面，引用内容放在后面
+                        content_to_record = f"{content_to_record} 【回复：{quoted_content}】"
+        # 其次，如果新内容为空，但这是一个卡片且有标题，则使用卡片标题
+        elif extracted_data.get("is_card") and extracted_data.get("card_title", "").strip():
+            # 卡片消息使用固定格式，包含标题和描述
+            card_title = extracted_data.get("card_title", "").strip()
+            card_description = extracted_data.get("card_description", "").strip()
+            card_type = extracted_data.get("card_type", "")
+            card_source = extracted_data.get("card_appname") or extracted_data.get("card_sourcedisplayname", "")
+            
+            # 构建格式化的卡片内容，包含标题和描述
+            # 根据卡片类型进行特殊处理
+            if "链接" in card_type or "消息" in card_type:
+                content_type = "链接"
+            elif "视频" in card_type or "音乐" in card_type:
+                content_type = "媒体"
+            elif "位置" in card_type:
+                content_type = "位置"
+            elif "图片" in card_type:
+                content_type = "图片"
+            elif "文件" in card_type:
+                content_type = "文件"
+            else:
+                content_type = "卡片"
+                
+            # 构建完整卡片内容
+            card_content = f"{content_type}: {card_title}"
+            
+            # 添加描述内容（如果有）
+            if card_description:
+                # 对较长的描述进行截断
+                max_desc_length = 50
+                if len(card_description) > max_desc_length:
+                    card_description = card_description[:max_desc_length] + "..."
+                card_content += f" - {card_description}"
+                
+            # 添加来源信息（如果有）
+            if card_source:
+                card_content += f" (来自:{card_source})"
+                
+            # 将整个卡片内容包裹在【】中
+            content_to_record = f"【{card_content}】"
+                
+            source_info = "来自 卡片(标题+描述)"
+        # 普通文本消息的保底处理
+        elif msg.type == 0x01 and not ("<" in original_content and ">" in original_content):
+            content_to_record = original_content.strip()
+            source_info = "来自 纯文本消息"
+
+        # 5. 如果最终没有提取到有效内容，则不记录
+        if not content_to_record:
+            self.LOG.debug(f"XmlProcessor未能提取到有效文本内容，跳过记录 (msg.id={msg.id}) - Quote: {extracted_data.get('has_quote', False)}, IsCard: {extracted_data.get('is_card', False)}")
+            return
+
+        # 6. 获取发送者昵称
+        sender_name = wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+        if not sender_name:  # 如果没有群昵称，尝试获取微信昵称
+            sender_data = all_contacts.get(msg.sender)
+            sender_name = sender_data if sender_data else msg.sender  # 最后使用wxid
+
+        # 7. 在终端输出处理结果 (如果需要调试)
+        # 检查原始消息是否包含XML特征，以便决定是否打印详细信息
+        current_time_str = time.strftime("%H:%M", time.localtime())  # 获取当前时间
+        is_potentially_xml = "<" in original_content and ">" in original_content
+        if is_potentially_xml:
+            print("\n==================== XML 消息处理 ====================")
+            print(f"发送者: {sender_name} ({msg.sender})")
+            print(f"群ID: {chat_id}")
+            print(f"消息ID: {msg.id}")
+            print(f"消息类型: {msg.type}")
+            print(f"媒体类型: {extracted_data.get('media_type', 'N/A')}")
+            print(f"是否引用: {extracted_data.get('has_quote', False)}")
+            print(f"是否卡片: {extracted_data.get('is_card', False)}")
+            
+            if extracted_data.get('has_quote', False):
+                print(f"  被引用者: {extracted_data.get('quoted_sender', 'N/A')}")
+                q_content = extracted_data.get('quoted_content', '')
+                print(f"  被引用内容: {q_content[:50]}{'...' if len(q_content) > 50 else ''}")
+                if extracted_data.get('quoted_is_card', False):
+                    print(f"  被引用卡片类型: {extracted_data.get('quoted_card_type', 'N/A')}")
+                    print(f"  被引用卡片标题: {extracted_data.get('quoted_card_title', 'N/A')}")
+            
+            if extracted_data.get('is_card', False):
+                print(f"  卡片类型: {extracted_data.get('card_type', 'N/A')}")
+                print(f"  卡片标题: {extracted_data.get('card_title', 'N/A')}")
+                c_desc = extracted_data.get('card_description', '')
+                print(f"  卡片描述: {c_desc[:50]}{'...' if len(c_desc) > 50 else ''}")
+                print(f"  卡片来源: {extracted_data.get('card_appname') or extracted_data.get('card_sourcedisplayname', 'N/A')}")
+            
+            print(f"提取来源: {source_info}")
+            print(f"最终记录内容: \"{content_to_record}\"")
+            print(f"标准格式记录: [{current_time_str}]{sender_name}: {content_to_record}")
+            print("======================================================\n")
+        elif content_to_record:  # 对于普通文本消息，使用标准格式输出
+            print(f"\n[{current_time_str}]{sender_name}: {content_to_record}\n")
+
+        # 8. 记录提取到的有效内容
+        self.LOG.debug(f"记录消息 (来源: {source_info}): '[{current_time_str}]{sender_name}: {content_to_record}' (来自 msg.id={msg.id})")
+        self.record_message(chat_id, sender_name, content_to_record, current_time_str) 
