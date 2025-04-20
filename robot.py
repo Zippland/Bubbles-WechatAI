@@ -230,6 +230,12 @@ class Robot(Job):
             # 普通消息情况
             content = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
         
+        # --- 添加：处理@机器人时的"新闻"关键词 ---
+        if content.lower() == "新闻":
+            self.LOG.info(f"检测到 @机器人 新闻 请求: {msg.content}")
+            return self.handleNewsRequest(msg) # 直接调用新闻处理并返回结果
+        # --- 添加结束 ---
+        
         # 处理重置对话记忆命令
         if content.lower() == "reset" or content == "重置" or content == "重置记忆":
             self.LOG.info(f"收到重置对话记忆请求: {msg.content}")
@@ -544,9 +550,18 @@ class Robot(Job):
                     q_with_info = f"[{current_time}] {sender_name}: [空内容]"
                 
             else:
-                # 处理私聊消息
-                self.LOG.info(f"处理私聊消息: 发送者={msg.sender}, 类型={msg.type}")
+                # --- 添加：处理私聊中的"新闻"关键词 ---
+                if msg.content.strip() == "新闻":
+                    if self.handleNewsRequest(msg):
+                        return # 已处理，直接返回
+                # --- 添加结束 ---
                 
+                # 私聊改名处理
+                change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
+                if change_name_match:
+                    self.sendTextMsg("❌ 改名功能只支持群聊", msg.sender)
+                    return
+
                 # 使用专门的私聊消息处理函数
                 msg_data = self.xml_processor.extract_private_quoted_message(msg)
                 
@@ -615,6 +630,12 @@ class Robot(Job):
                 # 如果在群里被 @
                 if msg.roomid not in self.config.GROUPS:  # 不在配置的响应的群列表里，忽略
                     return
+                    
+                # --- 添加：处理群聊中的"新闻"关键词 ---
+                if msg.content.strip() == "新闻":
+                    if self.handleNewsRequest(msg):
+                        return # 已处理，直接返回
+                # --- 添加结束 ---
 
                 # 改名命令处理
                 change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
@@ -682,6 +703,12 @@ class Robot(Job):
                         self.config.reload()
                         self.LOG.info("已更新")
                 else:
+                    # --- 添加：处理私聊中的"新闻"关键词 ---
+                    if msg.content.strip() == "新闻":
+                        if self.handleNewsRequest(msg):
+                            return # 已处理，直接返回
+                    # --- 添加结束 ---
+                    
                     # 私聊改名处理
                     change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
                     if change_name_match:
@@ -877,11 +904,70 @@ class Robot(Job):
     def newsReport(self) -> None:
         receivers = self.config.NEWS
         if not receivers:
+            self.LOG.info("未配置定时新闻接收人，跳过。")
             return
 
-        news = News().get_important_news()
-        for r in receivers:
-            self.sendTextMsg(news, r)
+        self.LOG.info("开始执行定时新闻推送任务...")
+        # 获取新闻，解包返回的元组
+        is_today, news_content = News().get_important_news()
+
+        # 必须是当天的新闻 (is_today=True) 并且有有效内容 (news_content非空) 才发送
+        if is_today and news_content:
+            self.LOG.info(f"成功获取当天新闻，准备推送给 {len(receivers)} 个接收人...")
+            for r in receivers:
+                self.sendTextMsg(news_content, r)
+            self.LOG.info("定时新闻推送完成。")
+        else:
+            # 记录没有发送的原因
+            if not is_today and news_content:
+                self.LOG.warning("获取到的是旧闻，定时推送已跳过。")
+            elif not news_content:
+                self.LOG.warning("获取新闻内容失败或为空，定时推送已跳过。")
+            else:  # 理论上不会执行到这里
+                self.LOG.warning("获取新闻失败（未知原因），定时推送已跳过。")
+            
+    def handleNewsRequest(self, msg: WxMsg) -> bool:
+        """处理用户通过关键词请求新闻的功能"""
+        self.LOG.info(f"收到来自 {msg.sender} (群聊: {msg.roomid if msg.from_group() else '无'}) 的新闻请求")
+        try:
+            news_instance = News()
+            # 调用修改后的方法，接收返回的元组(is_today, news_content)
+            is_today, news_content = news_instance.get_important_news()
+
+            receiver = msg.roomid if msg.from_group() else msg.sender
+            sender_for_at = msg.sender if msg.from_group() else "" # 群聊中@请求者
+
+            if is_today:
+                # 是当天新闻，直接发送
+                self.sendTextMsg(f"📰 今日要闻来啦：\n{news_content}", receiver, sender_for_at)
+                # 如果是群聊，尝试触发馈赠
+                if msg.from_group():
+                    self._try_trigger_goblin_gift(msg)
+                return True
+            else:
+                # 不是当天新闻或获取失败
+                if news_content:
+                    # 有内容，说明是旧闻
+                    prompt = "ℹ️ 今日新闻暂未发布，为您找到最近的一条新闻："
+                    self.sendTextMsg(f"{prompt}\n{news_content}", receiver, sender_for_at)
+                    # 如果是群聊，也触发一下馈赠
+                    if msg.from_group():
+                        self._try_trigger_goblin_gift(msg)
+                    return True
+                else:
+                    # 内容为空，说明获取彻底失败
+                    self.sendTextMsg("❌ 获取新闻失败，请稍后重试或联系管理员。", receiver, sender_for_at)
+                    # 如果是群聊，也触发一下馈赠
+                    if msg.from_group():
+                        self._try_trigger_goblin_gift(msg)
+                    return True # 也算成功处理了请求
+
+        except Exception as e:
+            self.LOG.error(f"处理新闻请求时出错: {e}")
+            receiver = msg.roomid if msg.from_group() else msg.sender
+            sender_for_at = msg.sender if msg.from_group() else ""
+            self.sendTextMsg("❌ 获取新闻时发生错误，请稍后重试。", receiver, sender_for_at)
+            return False # 处理失败
 
     def weatherReport(self, receivers: list = None) -> None:
         if receivers is None:
