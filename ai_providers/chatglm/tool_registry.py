@@ -8,7 +8,7 @@ from datetime import datetime
 from types import GenericAlias
 from typing import Annotated, get_origin
 
-from base.chatglm.comfyUI_api import ComfyUIApi
+from ai_providers.chatglm.comfyUI_api import ComfyUIApi
 from base.func_news import News
 from zhdate import ZhDate
 
@@ -128,7 +128,7 @@ def get_confyui_image(prompt: Annotated[str, '要生成图片的提示词,注意
     '''
     生成图片
     '''
-    with open("chatglm\\base.json", "r", encoding="utf-8") as f:
+    with open("ai_providers/chatglm/base.json", "r", encoding="utf-8") as f:
         data2 = json.load(f)
         data2['prompt']['3']['inputs']['seed'] = ''.join(
             random.sample('123456789012345678901234567890', 14))

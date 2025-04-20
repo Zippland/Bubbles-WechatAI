@@ -9,22 +9,22 @@ from threading import Thread
 import os
 import random
 import shutil
-from base.func_zhipu import ZhiPu
+from ai_providers.func_zhipu import ZhiPu
 from image import CogView, AliyunImage, GeminiImage
 
 from wcferry import Wcf, WxMsg
 
-from base.func_bard import BardAssistant
-from base.func_chatglm import ChatGLM
-from base.func_ollama import Ollama
-from base.func_chatgpt import ChatGPT
-from base.func_deepseek import DeepSeek
-from base.func_perplexity import Perplexity
+from ai_providers.func_bard import BardAssistant
+from ai_providers.func_chatglm import ChatGLM
+from ai_providers.func_ollama import Ollama
+from ai_providers.func_chatgpt import ChatGPT
+from ai_providers.func_deepseek import DeepSeek
+from ai_providers.func_perplexity import Perplexity
 from base.func_chengyu import cy
 from base.func_weather import Weather
 from base.func_news import News
-from base.func_tigerbot import TigerBot
-from base.func_xinghuo_web import XinghuoWeb
+from ai_providers.func_tigerbot import TigerBot
+from ai_providers.func_xinghuo_web import XinghuoWeb
 from base.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name, DuelManager
 from base.func_summary import MessageSummary  # 导入新的MessageSummary类
 from configuration import Config

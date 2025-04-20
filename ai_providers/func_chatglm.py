@@ -8,8 +8,8 @@ from datetime import datetime
 from typing import Optional
 import httpx
 from openai import OpenAI
-from base.chatglm.code_kernel import CodeKernel, execute
-from base.chatglm.tool_registry import dispatch_tool, extract_code, get_tools
+from ai_providers.chatglm.code_kernel import CodeKernel, execute
+from ai_providers.chatglm.tool_registry import dispatch_tool, extract_code, get_tools
 from wcferry import Wcf
 
 functions = get_tools()
