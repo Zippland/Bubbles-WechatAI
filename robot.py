@@ -546,7 +546,7 @@ class Robot(Job):
                 perplexity_instance = self.get_perplexity_instance()
                 if perplexity_instance:
                     chat_id = msg.roomid if msg.from_group() else msg.sender
-                    processed_by_perplexity = perplexity_instance.process_message(
+                    return perplexity_instance.process_message(
                         content=content,
                         chat_id=chat_id,
                         sender=msg.sender,
@@ -554,9 +554,6 @@ class Robot(Job):
                         from_group=msg.from_group(),
                         send_text_func=self.sendTextMsg
                     )
-                    if processed_by_perplexity:
-                        return True
-                    # 如果Perplexity因权限不足等原因未处理，继续传递给toChitchat
                 else:
                     self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
                     return True
@@ -636,10 +633,6 @@ class Robot(Job):
             
             # 添加时间戳和发送者信息到用户消息前面
             current_time = time.strftime("%H:%M", time.localtime())
-            
-            # 清理引用内容，去掉换行和多余空格
-            if quoted_content:
-                quoted_content = re.sub(r'\s+', ' ', quoted_content).strip()
             
             # 构建完整消息，包含用户消息和引用内容（如果有）
             if not user_msg and quoted_content:
@@ -817,7 +810,8 @@ class Robot(Job):
             # 清理可能存在的HTML/XML标签，确保纯文本
             if content_text:
                 content_text = re.sub(r'<.*?>', '', content_text)
-                # 不再限制引用内容长度
+                # 去除换行符和多余空格
+                content_text = re.sub(r'\s+', ' ', content_text).strip()
             
             if display_name_text and content_text:
                 return f"{display_name_text}: {content_text}"
@@ -875,7 +869,8 @@ class Robot(Job):
                 extracted = content_match.group(1)
                 # 清理可能存在的XML标签
                 extracted = re.sub(r'<.*?>', '', extracted)
-                # 不再限制内容长度
+                # 去除换行符和多余空格
+                extracted = re.sub(r'\s+', ' ', extracted).strip()
                 return extracted
                 
             # 查找displayname和content的组合
@@ -885,7 +880,8 @@ class Robot(Job):
             if display_name_match and content_match:
                 name = re.sub(r'<.*?>', '', display_name_match.group(1))
                 text = re.sub(r'<.*?>', '', content_match.group(1))
-                # 不再限制内容长度
+                # 去除换行符和多余空格
+                text = re.sub(r'\s+', ' ', text).strip()
                 return f"{name}: {text}"
                 
             # 查找引用或回复的关键词
@@ -895,7 +891,8 @@ class Robot(Job):
                 if match:
                     text = match.group(1).strip()
                     text = re.sub(r'<.*?>', '', text)
-                    # 不再限制内容长度
+                    # 去除换行符和多余空格
+                    text = re.sub(r'\s+', ' ', text).strip()
                     return text
             
             return ""
@@ -1078,21 +1075,25 @@ class Robot(Job):
                         perplexity_instance = self.get_perplexity_instance()
                         if perplexity_instance:
                             chat_id = msg.roomid if msg.from_group() else msg.sender
-                            processed_by_perplexity = perplexity_instance.process_message(
+                            if perplexity_instance.process_message(
                                 content=msg.content,
                                 chat_id=chat_id,
                                 sender=msg.sender,
                                 roomid=msg.roomid,
                                 from_group=msg.from_group(),
                                 send_text_func=self.sendTextMsg
-                            )
-                            if processed_by_perplexity:
+                            ):
                                 return True
                         else:
                             self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
                             return True
 
                     self.toChitchat(msg)  # 闲聊
+                    
+            # 新增：处理私聊引用消息
+            elif msg.type == 49:  # App消息（包括引用消息、链接等）
+                self.LOG.info(f"收到私聊引用/App消息 (Type 49) from {msg.sender}，转交 toChitchat 处理")
+                self.toChitchat(msg)  # 直接转交给 toChitchat 处理
 
         except Exception as e:
             self.LOG.error(f"处理消息时发生错误: {e}")
