@@ -307,8 +307,8 @@ class HarryPotterDuel:
         
         # Boss战特殊设置
         if self.is_boss_fight:
-            # Boss战胜率极低，设为3%
-            self.player_win_chance = 0.03
+            # Boss战胜率极低，设为10%
+            self.player_win_chance = 0.1
             # 添加Boss战提示信息
             self.steps.append("⚠️ Boss战开始！挑战强大的魔法师泡泡！")
             
