@@ -387,6 +387,7 @@ class Robot(Job):
             
             if msg.from_group():
                 self.sendTextMsg(result, msg.roomid, msg.sender)
+                self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
             else:
                 self.sendTextMsg(result, msg.sender)
                 
@@ -409,6 +410,7 @@ class Robot(Job):
             
             # 发送总结
             self.sendTextMsg(summary, msg.roomid, msg.sender)
+            self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
             return True
         
         # 处理清除历史命令
@@ -426,8 +428,10 @@ class Robot(Job):
             # 清除历史
             if self.message_summary.clear_message_history(chat_id):
                 self.sendTextMsg("✅ 已清除本群的消息历史记录", msg.roomid, msg.sender)
+                self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
             else:
                 self.sendTextMsg("⚠️ 本群没有消息历史记录", msg.roomid, msg.sender)
+                self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
                     
             return True
         
@@ -445,6 +449,7 @@ class Robot(Job):
                 from base.func_duel import change_player_name
                 result = change_player_name(old_name, new_name, msg.roomid)
                 self.sendTextMsg(result, msg.roomid, msg.sender)
+                self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
                 return True
         
         # --- 新增：偷袭功能处理 ---
@@ -465,6 +470,7 @@ class Robot(Job):
 
             # 发送结果
             self.sendTextMsg(result_message, msg.roomid, msg.sender)
+            self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
             return True
         # --- 偷袭功能处理结束 ---
 
@@ -501,7 +507,8 @@ class Robot(Job):
             from base.func_duel import get_rank_list
             rank_list = get_rank_list(10, msg.roomid)  # 正确传递群组ID
             self.sendTextMsg(rank_list, msg.roomid)
-            return True
+            self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
+            return
         
         # 个人战绩查询
         stats_match = re.search(r"(决斗战绩|我的战绩|战绩查询)(.*)", content)
@@ -512,7 +519,8 @@ class Robot(Job):
             
             stats = get_player_stats(player_name, msg.roomid)  # 传递群ID
             self.sendTextMsg(stats, msg.roomid)
-            return True
+            self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
+            return
         
         # 查看装备功能
         if content == "我的装备" or content == "查看装备":
@@ -531,12 +539,14 @@ class Robot(Job):
             ]
             
             self.sendTextMsg("\n".join(result), msg.roomid)
-            return True
+            self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
+            return
         
         # 帮助信息查询
         if content.startswith("info") or content == "帮助" or content == "指令":
             help_info = self.get_bot_help_info()
             self.sendTextMsg(help_info, msg.roomid)
+            self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
             return True
         
         # 阿里文生图处理
@@ -545,6 +555,7 @@ class Robot(Job):
             if prompt:
                 result = self.handle_image_generation('aliyun', prompt, msg.roomid, msg.sender)
                 if result:
+                    self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
                     return True
                 
         # CogView处理
@@ -553,13 +564,17 @@ class Robot(Job):
             if prompt:
                 result = self.handle_image_generation('cogview', prompt, msg.roomid, msg.sender)
                 if result:
+                    self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
                     return True
         
         # 谷歌AI画图处理
         elif content.startswith(gemini_trigger):
             prompt = content[len(gemini_trigger):].strip()
             if prompt:
-                return self.handle_image_generation('gemini', prompt, msg.roomid or msg.sender, msg.sender if msg.roomid else None)
+                result = self.handle_image_generation('gemini', prompt, msg.roomid or msg.sender, msg.sender if msg.roomid else None)
+                if result and msg.from_group():
+                    self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
+                return True
             else:
                 self.sendTextMsg(f"请在{gemini_trigger}后面添加您想要生成的图像描述", msg.roomid or msg.sender, msg.sender if msg.roomid else None)
                 return True
@@ -572,7 +587,7 @@ class Robot(Job):
                 perplexity_instance = self.get_perplexity_instance()
                 if perplexity_instance:
                     chat_id = msg.roomid if msg.from_group() else msg.sender
-                    return perplexity_instance.process_message(
+                    result = perplexity_instance.process_message(
                         content=content,
                         chat_id=chat_id,
                         sender=msg.sender,
@@ -580,6 +595,9 @@ class Robot(Job):
                         from_group=msg.from_group(),
                         send_text_func=self.sendTextMsg
                     )
+                    if result and msg.from_group():
+                        self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
+                    return result
                 else:
                     self.sendTextMsg("Perplexity服务未配置", msg.roomid if msg.from_group() else msg.sender)
                     return True
@@ -611,13 +629,21 @@ class Robot(Job):
                 if cy.isChengyu(text):
                     rsp = cy.getNext(text)
                     if rsp:
-                        self.sendTextMsg(rsp, msg.roomid)
+                        if msg.from_group():
+                            self.sendTextMsg(rsp, msg.roomid)
+                            self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
+                        else:
+                            self.sendTextMsg(rsp, msg.sender)
                         status = True
             elif flag in ["?", "？"]:  # 查词
                 if cy.isChengyu(text):
                     rsp = cy.getMeaning(text)
                     if rsp:
-                        self.sendTextMsg(rsp, msg.roomid)
+                        if msg.from_group():
+                            self.sendTextMsg(rsp, msg.roomid)
+                            self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
+                        else:
+                            self.sendTextMsg(rsp, msg.sender)
                         status = True
 
         return status
@@ -694,12 +720,13 @@ class Robot(Job):
         if rsp:
             if msg.from_group():
                 self.sendTextMsg(rsp, msg.roomid, msg.sender)
+                self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
             else:
                 self.sendTextMsg(rsp, msg.sender)
 
             return True
         else:
-            self.LOG.error(f"无法从 ChatGPT 获得答案")
+            self.LOG.error(f"无法从 AI 获得答案")
             return False
 
     def processMsg(self, msg: WxMsg) -> None:
@@ -1131,6 +1158,86 @@ class Robot(Job):
             
         return None
 
+    def _try_trigger_goblin_gift(self, msg: WxMsg) -> None:
+        """尝试触发古灵阁妖精的馈赠事件
+        
+        用户与机器人互动时，有概率获得随机积分
+        根据配置决定是否启用及在哪些群聊启用
+        
+        Args:
+            msg: 微信消息对象
+        """
+        # 检查配置是否存在
+        if not hasattr(self.config, 'GOBLIN_GIFT'):
+            return
+        
+        # 检查全局开关
+        if not self.config.GOBLIN_GIFT.get('enable', False):
+            return
+        
+        # 检查群聊白名单
+        allowed_groups = self.config.GOBLIN_GIFT.get('allowed_groups', [])
+        if not allowed_groups or msg.roomid not in allowed_groups:
+            return
+        
+        # 只在群聊中才触发
+        if not msg.from_group():
+            return
+        
+        # 获取触发概率，默认1%
+        probability = self.config.GOBLIN_GIFT.get('probability', 0.01)
+        
+        # 按概率触发
+        if random.random() < probability:
+            try:
+                # 获取玩家昵称
+                player_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+                if not player_name:
+                    player_name = msg.sender  # 如果获取不到昵称，用wxid代替
+                
+                # 初始化对应群聊的积分系统
+                from base.func_duel import DuelRankSystem
+                rank_system = DuelRankSystem(group_id=msg.roomid)
+                
+                # 获取配置的积分范围，默认10-100
+                min_points = self.config.GOBLIN_GIFT.get('min_points', 10)
+                max_points = self.config.GOBLIN_GIFT.get('max_points', 100)
+                
+                # 随机增加积分
+                points_added = random.randint(min_points, max_points)
+                
+                # 更新玩家数据
+                player_data = rank_system.get_player_data(player_name)
+                player_data['score'] += points_added
+                
+                # 保存数据
+                rank_system._save_ranks()
+                
+                # 准备随机馈赠消息
+                gift_sources = [
+                    f"✨ 一只迷路的家养小精灵往 {player_name} 口袋里塞了什么东西！",
+                    f"💰 古灵阁的妖精似乎格外青睐 {player_name}，留下了一袋金加隆（折合积分）！",
+                    f"🦉 一只送信的猫头鹰丢错了包裹，{player_name} 意外发现了一笔“意外之财”！",
+                    f"🍀 {player_name} 踩到了一株幸运四叶草，好运带来了额外的积分！",
+                    f"🍄 在禁林的边缘，{player_name} 发现了一簇闪闪发光的魔法蘑菇！",
+                    f"❓ {player_name} 捡到了一个有求必应屋掉出来的神秘物品！",
+                    f"🔮 временами удача улыбается {player_name}!",  # 偶尔来点不一样的语言增加神秘感
+                    f"🎉 费尔奇打瞌睡时掉了一小袋没收来的积分，刚好被 {player_name} 捡到！",
+                    f"📜 一张古老的藏宝图碎片指引 {player_name} 找到了一些失落的积分！",
+                    f"🧙‍♂️ 邓布利多教授对 {player_name} 的行为表示赞赏，特批“为学院加分”！",
+                    f"🧪 {player_name} 的魔药课作业获得了斯拉格霍恩教授的额外加分！",
+                    f"🌟 一颗流星划过霍格沃茨上空，{player_name} 许下的愿望成真了！"
+                ]
+                gift_message = random.choice(gift_sources)
+                final_message = f"{gift_message}\n获得积分: +{points_added} 分！"
+                
+                # 发送馈赠通知 (@发送者)
+                self.sendTextMsg(final_message, msg.roomid, msg.sender)
+                self.LOG.info(f"古灵阁馈赠触发: 群 {msg.roomid}, 用户 {player_name}, 获得 {points_added} 积分")
+                
+            except Exception as e:
+                self.LOG.error(f"触发古灵阁馈赠时出错: {e}")
+
     def _select_model_for_message(self, msg: WxMsg) -> None:
         """根据消息来源选择对应的AI模型
         :param msg: 接收到的消息
@@ -1193,3 +1300,4 @@ class Robot(Job):
             self.LOG.error(e)
 
         return 0
+

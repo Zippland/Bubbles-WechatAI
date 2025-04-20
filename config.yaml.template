@@ -181,3 +181,10 @@ perplexity:  # -----perplexity配置这行不填-----
   allow_all: false  # 是否允许所有群聊和用户使用Perplexity，设为true时忽略下面的白名单配置
   allowed_groups: []  # 允许使用Perplexity的群聊ID列表，例如：["123456789@chatroom", "123456789@chatroom"]
   allowed_users: []  # 允许使用Perplexity的用户ID列表，例如：["wxid_sl8oom9niyvl22", "filehelper"]
+
+goblin_gift:  # -----古灵阁妖精的馈赠配置这行不填-----
+  enable: false  # 是否全局启用古灵阁妖精的馈赠功能，默认关闭
+  probability: 0.01  # 触发概率，默认为1%
+  min_points: 10  # 最小奖励积分
+  max_points: 100  # 最大奖励积分
+  allowed_groups: []  # 允许使用馈赠功能的群聊ID列表，例如：["123456789@chatroom", "123456789@chatroom"]，留空表示不启用
