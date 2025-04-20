@@ -2,6 +2,7 @@
 
 import logging
 import time
+import re
 from collections import deque
 from threading import Lock
 
@@ -146,7 +147,6 @@ class MessageSummary:
         # 构建提示词 - 更加客观、中立
         prompt = (
             "下面是一组聊天消息记录。请提供一个客观的总结，包括：\n"
-            "- 主要参与者\n"
             "- 讨论的主要话题\n"
             "- 关键信息和要点\n\n"
             "请直接给出总结内容，不要添加额外的评论或人格色彩。\n\n"
@@ -191,13 +191,59 @@ class MessageSummary:
         else:
             return self._basic_summarize(messages)
     
-    def process_message_from_wxmsg(self, msg, wcf, all_contacts):
+    def _extract_new_content_from_quote(self, content):
+        """从引用消息中提取新内容
+        
+        Args:
+            content: 原始消息内容
+            
+        Returns:
+            str: 提取出的新内容，如果无法提取则返回原始内容
+        """
+        try:
+            # 检查是否为引用消息
+            if "<refermsg>" not in content:
+                return content
+                
+            # 查找XML开始位置
+            xml_start_tags = ["<msg>", "<appmsg", "<?xml", "<refermsg>"]
+            xml_start_index = -1
+            
+            for tag in xml_start_tags:
+                pos = content.find(tag)
+                if pos >= 0:
+                    xml_start_index = pos
+                    break
+                    
+            # 如果找到了XML开始位置且不在开头，说明前面部分是新消息
+            if xml_start_index > 0:
+                new_content = content[:xml_start_index].strip()
+                
+                # 清理@提及 (微信@后面通常有特殊空格\u2005)
+                if new_content.startswith("@") and '\u2005' in new_content:
+                    mention_end = new_content.find('\u2005')
+                    if mention_end != -1:
+                        new_content = new_content[mention_end + 1:].strip()
+                
+                # 如果清理后内容不为空，返回它
+                if new_content:
+                    return new_content
+            
+            # 如果无法提取新内容，返回原始内容
+            return content
+            
+        except Exception as e:
+            self.LOG.error(f"提取引用消息新内容时出错: {e}")
+            return content  # 出错时返回原始内容
+    
+    def process_message_from_wxmsg(self, msg, wcf, all_contacts, bot_wxid=None):
         """从微信消息对象中处理并记录消息
         
         Args:
             msg: 微信消息对象(WxMsg)
             wcf: 微信接口对象
             all_contacts: 所有联系人字典
+            bot_wxid: 机器人自己的wxid，用于检测@机器人的消息
         """
         # 只记录群聊消息
         if not msg.from_group():
@@ -216,6 +262,39 @@ class MessageSummary:
         
         # 获取发送者昵称
         sender_name = wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+        if not sender_name:  # 如果没有群昵称，尝试获取微信昵称
+            sender_data = all_contacts.get(msg.sender)
+            sender_name = sender_data if sender_data else msg.sender  # 最后使用wxid
+            
+        # 获取消息内容
+        original_content = msg.content
         
+        # 如果提供了机器人wxid，检查是否是@机器人的消息
+        if bot_wxid:
+            # 获取机器人在群里的昵称
+            bot_name_in_group = wcf.get_alias_in_chatroom(bot_wxid, chat_id)
+            if not bot_name_in_group:
+                # 如果获取不到群昵称，使用通讯录中的名称或默认名称
+                bot_name_in_group = all_contacts.get(bot_wxid, "泡泡")  # 默认使用"泡泡"
+                
+            # 检查消息中任意位置是否@机器人（含特殊空格\u2005）
+            mention_pattern = f"@{bot_name_in_group}"
+            if mention_pattern in original_content:
+                # 消息提及了机器人，不记录
+                self.LOG.debug(f"跳过包含@机器人的消息: {original_content[:30]}...")
+                return
+                
+            # 使用正则表达式匹配更复杂的情况（考虑特殊空格）
+            if re.search(rf"@{re.escape(bot_name_in_group)}(\u2005|\\s|$)", original_content):
+                self.LOG.debug(f"通过正则跳过包含@机器人的消息: {original_content[:30]}...")
+                return
+        
+        # 对于引用消息，提取新的内容部分
+        if "<refermsg>" in original_content:
+            content_to_record = self._extract_new_content_from_quote(original_content)
+            self.LOG.debug(f"处理引用消息: 原始长度={len(original_content)}, 提取后长度={len(content_to_record)}")
+        else:
+            content_to_record = original_content
+            
         # 记录消息
-        self.record_message(chat_id, sender_name, msg.content) 
+        self.record_message(chat_id, sender_name, content_to_record) 

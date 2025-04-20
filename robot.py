@@ -910,7 +910,7 @@ class Robot(Job):
         """
         try:
             # 使用MessageSummary记录消息
-            self.message_summary.process_message_from_wxmsg(msg, self.wcf, self.allContacts)
+            self.message_summary.process_message_from_wxmsg(msg, self.wcf, self.allContacts, self.wxid)
             
             # 根据消息来源选择使用的AI模型
             self._select_model_for_message(msg)
