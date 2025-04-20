@@ -536,10 +536,8 @@ class HarryPotterDuel:
             if challenger_rank is not None and total_players > 0:
                 # 排名越大（越靠后），先手优势越大
                 first_attack_prob = 0.5 + (challenger_rank / total_players) * 0.3
-                self.steps.append(f"📊 挑战者排名: 第{challenger_rank}/{total_players}名，先手概率: {int(first_attack_prob*100)}%")
             else:
                 first_attack_prob = 0.5  # 默认概率
-                self.steps.append(f"📊 挑战者暂无排名，先手概率: 50%")
                 
             current_attacker = "player1" if random.random() < first_attack_prob else "player2"
         else:
@@ -559,10 +557,8 @@ class HarryPotterDuel:
             if challenger_rank is not None and total_players > 0:
                 # 排名越大（越靠后），先手优势越大
                 first_attack_prob = 0.5 + (challenger_rank / total_players) * 0.3
-                self.steps.append(f"📊 挑战者排名: 第{challenger_rank}/{total_players}名，先手概率: {int(first_attack_prob*100)}%")
             else:
                 first_attack_prob = 0.5  # 默认概率
-                self.steps.append(f"📊 挑战者暂无排名，先手概率: 50%")
                 
             current_attacker = "player2" if random.random() < first_attack_prob else "player1"
         
