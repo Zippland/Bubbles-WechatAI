@@ -25,7 +25,7 @@ from base.func_weather import Weather
 from base.func_news import News
 from ai_providers.func_tigerbot import TigerBot
 from ai_providers.func_xinghuo_web import XinghuoWeb
-from base.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name, DuelManager
+from base.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name, DuelManager, attempt_sneak_attack
 from base.func_summary import MessageSummary  # 导入新的MessageSummary类
 from configuration import Config
 from constants import ChatType
@@ -325,8 +325,9 @@ class Robot(Job):
         help_text = [
             "🤖 泡泡的指令列表 🤖",
             "",
-            "【决斗系统】",
+            "【决斗 & 偷袭】",
             "▶️ 决斗@XX - 向某人发起决斗",
+            "▶️ 偷袭@XX / 偷分@XX - 尝试偷取积分",
             "▶️ 决斗排行/排行榜",
             "▶️ 我的战绩/决斗战绩",
             "▶️ 改名 旧名 新名 - 更新昵称",
@@ -430,7 +431,7 @@ class Robot(Job):
                     
             return True
         
-        # 改名命令处理 - 添加到toAt方法中处理被@的情况
+        # 改名命令处理
         change_name_match = re.search(r"改名\s+([^\s]+)\s+([^\s]+)", msg.content)
         if change_name_match:
             self.LOG.info(f"检测到改名请求: {msg.content}")
@@ -446,6 +447,27 @@ class Robot(Job):
                 self.sendTextMsg(result, msg.roomid, msg.sender)
                 return True
         
+        # --- 新增：偷袭功能处理 ---
+        sneak_attack_match = re.search(r"(?:偷袭|偷分).*?@([^\s@]+)", msg.content)
+        if sneak_attack_match:
+            target_name = sneak_attack_match.group(1).strip()
+            self.LOG.info(f"检测到偷袭请求: 目标={target_name}")
+
+            if not msg.from_group():
+                self.sendTextMsg("❌ 偷袭功能只支持群聊哦。", msg.sender)
+                return True
+
+            # 获取攻击者昵称
+            attacker_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
+
+            # 调用偷袭逻辑
+            result_message = attempt_sneak_attack(attacker_name, target_name, msg.roomid)
+
+            # 发送结果
+            self.sendTextMsg(result_message, msg.roomid, msg.sender)
+            return True
+        # --- 偷袭功能处理结束 ---
+
         # 决斗功能处理 - 优化正则匹配
         duel_match = re.search(r"决斗.*?(?:@|[与和]).*?([^\s@]+)", content)
         #self.LOG.info(f"决斗检测 - 原始内容: {msg.content}, 处理后内容: {content}, 匹配结果: {duel_match}")
@@ -795,6 +817,12 @@ class Robot(Job):
                     duel_match = re.search(r"^决斗\s*(?:@|[与和])\s*([^\s]+)$", msg.content)
                     if duel_match:
                         self.sendTextMsg("❌ 决斗功能只支持群聊", msg.sender)
+                        return
+                    
+                    # 偷袭功能处理（私聊）
+                    sneak_attack_match = re.search(r"^(?:偷袭|偷分)\s*(?:@|[与和])\s*([^\s]+)$", msg.content)
+                    if sneak_attack_match:
+                        self.sendTextMsg("❌ 偷袭功能只支持群聊", msg.sender)
                         return
                     
                     # 决斗排行榜查询

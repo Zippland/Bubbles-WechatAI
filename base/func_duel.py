@@ -1012,3 +1012,107 @@ class DuelManager:
         """
         with self._duel_lock:
             return self._duel_thread is not None and self._duel_thread.is_alive()
+
+# --- 新增：偷袭成功/失败的随机句子 ---
+SNEAK_ATTACK_SUCCESS_MESSAGES = [
+    "趁其不备，{attacker} 悄悄从 {target} 的口袋里摸走了 {points} 积分！真是个小机灵鬼！👻",
+    "月黑风高夜，正是下手时！{attacker} 成功偷袭 {target}，顺走了 {points} 积分！🌙",
+    "{target} 一时大意，被 {attacker} 抓住了破绽，损失了 {points} 积分！💸",
+    "神不知鬼不觉，{attacker} 从 {target} 那里“借”来了 {points} 积分！🤫",
+    "手法娴熟！{attacker} 像一阵风一样掠过，{target} 发现时已经少了 {points} 积分！💨",
+]
+
+SNEAK_ATTACK_FAILURE_MESSAGES = [
+    "哎呀！{attacker} 的鬼祟行踪被 {target} 发现了，偷袭失败！👀",
+    "{target} 警惕性很高，{attacker} 的小动作没能得逞。🛡️",
+    "差点就成功了！可惜 {attacker} 不小心弄出了声响，被 {target} 逮个正着！🔔",
+    "{target} 哼了一声：“就这点伎俩？” {attacker} 的偷袭计划泡汤了。😏",
+    "运气不佳，{attacker} 刚伸手就被 {target} 的护身符弹开了，偷袭失败！✨",
+    "{attacker} 脚底一滑，在 {target} 面前摔了个狗啃泥，偷袭什么的早就忘光了！🤣",
+    "{target} 突然转身，和 {attacker} 对视，场面一度十分尴尬... 偷袭失败！😅",
+    "{attacker} 刚准备动手，{target} 的口袋里突然钻出一只嗅嗅，叼走了 {attacker} 的...嗯？偷袭失败！👃",
+    "{target} 拍了拍 {attacker} 的肩膀：“兄弟，想啥呢？”，{attacker} 只好悻悻收手。🤝",
+    "一阵妖风刮过，把 {attacker} 准备用来偷袭的工具吹跑了... 时运不济啊！🌬️",
+    "{attacker} 发现 {target} 的口袋是画上去的！可恶，被摆了一道！🖌️",
+]
+
+# --- 新增：处理偷袭逻辑的函数 ---
+def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) -> str:
+    """
+    处理玩家尝试偷袭另一个玩家的逻辑
+
+    Args:
+        attacker_name: 偷袭者名称
+        target_name: 被偷袭者名称
+        group_id: 群组ID
+
+    Returns:
+        str: 偷袭结果的消息
+    """
+    if not group_id:
+        return "❌ 偷袭功能也只支持群聊哦。"
+
+    try:
+        rank_system = DuelRankSystem(group_id)
+
+        # 获取双方数据和排名
+        attacker_rank, attacker_data = rank_system.get_player_rank(attacker_name)
+        target_rank, target_data = rank_system.get_player_rank(target_name)
+
+        # 检查玩家是否存在
+        if attacker_name not in rank_system.ranks["groups"][group_id]["players"]:
+             return f"❌ 偷袭发起者 {attacker_name} 还没有决斗记录。"
+        if target_name not in rank_system.ranks["groups"][group_id]["players"]:
+            return f"❌ 目标 {target_name} 还没有决斗记录。"
+
+        # 获取总玩家数
+        all_players = rank_system.get_rank_list(9999)
+        total_players = len(all_players)
+
+        success_prob = 0.3  # 基础成功率 30%
+
+        # 计算概率加成（仅当双方都有排名且总人数大于0时）
+        if attacker_rank is not None and target_rank is not None and total_players > 0:
+            if attacker_rank > target_rank:  # 偷袭者排名更低
+                rank_difference = attacker_rank - target_rank
+                # 排名差值影响概率，最多增加 40%
+                success_prob += min((rank_difference / total_players) * 0.4, 0.4)
+            # else: 偷袭者排名更高或相同，使用基础概率 30%
+
+        # 确保概率在 0 到 1 之间
+        success_prob = max(0, min(1, success_prob))
+
+        # 格式化概率显示为0-100%的百分比
+        prob_percent = success_prob * 100
+        logging.info(f"偷袭计算: {attacker_name}({attacker_rank}) vs {target_name}({target_rank}), 总人数: {total_players}, 成功率: {prob_percent:.1f}%")
+
+        # 决定偷袭是否成功
+        if random.random() < success_prob:
+            # --- 偷袭成功 ---
+            score_difference = abs(attacker_data['score'] - target_data['score'])
+            points_stolen = max(10, int(score_difference * 0.1))  # 偷取分数差的10%，至少10分
+
+            # 更新分数
+            attacker_data['score'] += points_stolen
+            target_data['score'] = max(1, target_data['score'] - points_stolen)  # 确保分数不低于1
+
+            # 保存数据
+            rank_system._save_ranks()
+
+            # 选择并格式化成功消息
+            message_template = random.choice(SNEAK_ATTACK_SUCCESS_MESSAGES)
+            result_message = message_template.format(attacker=attacker_name, target=target_name, points=points_stolen)
+            logging.info(f"偷袭成功: {attacker_name} 偷取 {target_name} {points_stolen} 分")
+
+        else:
+            # --- 偷袭失败 ---
+            # 选择并格式化失败消息
+            message_template = random.choice(SNEAK_ATTACK_FAILURE_MESSAGES)
+            result_message = message_template.format(attacker=attacker_name, target=target_name)
+            logging.info(f"偷袭失败: {attacker_name} 偷袭 {target_name}")
+
+        return result_message
+
+    except Exception as e:
+        logging.error(f"处理偷袭时发生错误: {e}")
+        return f"处理偷袭时发生内部错误: {e}"
