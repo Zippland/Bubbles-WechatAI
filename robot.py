@@ -11,6 +11,7 @@ import random
 import shutil
 from ai_providers.func_zhipu import ZhiPu
 from image import CogView, AliyunImage, GeminiImage
+from image.image_manager import ImageGenerationManager
 
 from wcferry import Wcf, WxMsg
 
@@ -31,6 +32,7 @@ from configuration import Config
 from constants import ChatType
 from job_mgmt import Job
 from base.func_xml_process import XmlProcessor
+from base.func_goblin_gift import GoblinGiftManager
 
 __version__ = "39.2.4.0"
 
@@ -158,166 +160,16 @@ class Robot(Job):
                     elif wxid:
                         self.LOG.warning(f"  私聊用户 {wxid} 配置的模型ID {model_id} 不可用")
         
-        # 初始化图像生成服务
-        self.cogview = None
-        self.aliyun_image = None
-        self.gemini_image = None
-        
-        # 初始化Gemini图像生成服务
-        try:
-            if hasattr(self.config, 'GEMINI_IMAGE'):
-                self.gemini_image = GeminiImage(self.config.GEMINI_IMAGE)
-            else:
-                self.gemini_image = GeminiImage({})
-            
-            if getattr(self.gemini_image, 'enable', False):
-                self.LOG.info("谷歌Gemini图像生成功能已启用")
-        except Exception as e:
-            self.LOG.error(f"初始化谷歌Gemini图像生成服务失败: {e}")
-        
-        # 初始化CogView和AliyunImage服务
-        if hasattr(self.config, 'COGVIEW') and self.config.COGVIEW.get('enable', False):
-            try:
-                self.cogview = CogView(self.config.COGVIEW)
-                self.LOG.info("智谱CogView文生图功能已初始化")
-            except Exception as e:
-                self.LOG.error(f"初始化智谱CogView文生图服务失败: {str(e)}")
-        if hasattr(self.config, 'ALIYUN_IMAGE') and self.config.ALIYUN_IMAGE.get('enable', False):
-            try:
-                self.aliyun_image = AliyunImage(self.config.ALIYUN_IMAGE)
-                self.LOG.info("阿里Aliyun功能已初始化")
-            except Exception as e:
-                self.LOG.error(f"初始化阿里云文生图服务失败: {str(e)}")
+        # 初始化图像生成管理器
+        self.image_manager = ImageGenerationManager(self.config, self.wcf, self.LOG, self.sendTextMsg)
                 
+        # 初始化古灵阁妖精馈赠管理器
+        self.goblin_gift_manager = GoblinGiftManager(self.config, self.wcf, self.LOG, self.sendTextMsg)
+        
     @staticmethod
     def value_check(args: dict) -> bool:
         if args:
             return all(value is not None for key, value in args.items() if key != 'proxy')
-        return False
-
-    def handle_image_generation(self, service_type, prompt, receiver, at_user=None):
-        """处理图像生成请求的通用函数
-        :param service_type: 服务类型，'cogview'/'aliyun'/'gemini'
-        :param prompt: 图像生成提示词
-        :param receiver: 接收者ID
-        :param at_user: 被@的用户ID，用于群聊
-        :return: 处理状态，True成功，False失败
-        """
-        if service_type == 'cogview':
-            if not self.cogview or not hasattr(self.config, 'COGVIEW') or not self.config.COGVIEW.get('enable', False):
-                self.LOG.info(f"收到智谱文生图请求但功能未启用: {prompt}")
-                fallback_to_chat = self.config.COGVIEW.get('fallback_to_chat', False) if hasattr(self.config, 'COGVIEW') else False
-                if not fallback_to_chat:
-                    self.sendTextMsg("报一丝，智谱文生图功能没有开启，请联系管理员开启此功能。（可以贿赂他开启）", receiver, at_user)
-                    return True
-                return False
-            service = self.cogview
-            wait_message = "正在生成图像，请稍等..."
-        elif service_type == 'aliyun':
-            if not self.aliyun_image or not hasattr(self.config, 'ALIYUN_IMAGE') or not self.config.ALIYUN_IMAGE.get('enable', False):
-                self.LOG.info(f"收到阿里文生图请求但功能未启用: {prompt}")
-                fallback_to_chat = self.config.ALIYUN_IMAGE.get('fallback_to_chat', False) if hasattr(self.config, 'ALIYUN_IMAGE') else False
-                if not fallback_to_chat:
-                    self.sendTextMsg("报一丝，阿里文生图功能没有开启，请联系管理员开启此功能。（可以贿赂他开启）", receiver, at_user)
-                    return True
-                return False
-            service = self.aliyun_image
-            model_type = self.config.ALIYUN_IMAGE.get('model', '')
-            if model_type == 'wanx2.1-t2i-plus':
-                wait_message = "当前模型为阿里PLUS模型，生成速度较慢，请耐心等候..."
-            elif model_type == 'wanx-v1':
-                wait_message = "当前模型为阿里V1模型，生成速度非常慢，可能需要等待较长时间，请耐心等候..."
-            else:
-                wait_message = "正在生成图像，请稍等..."
-        elif service_type == 'gemini':
-            if not self.gemini_image or not getattr(self.gemini_image, 'enable', False):
-                self.sendTextMsg("谷歌文生图服务未启用", receiver, at_user)
-                return True
-                
-            service = self.gemini_image
-            wait_message = "正在通过谷歌AI生成图像，请稍等..."
-        else:
-            self.LOG.error(f"未知的图像生成服务类型: {service_type}")
-            return False
-            
-        self.LOG.info(f"收到图像生成请求 [{service_type}]: {prompt}")
-        self.sendTextMsg(wait_message, receiver, at_user)
-        
-        image_url = service.generate_image(prompt)
-        
-        if image_url and (image_url.startswith("http") or os.path.exists(image_url)):
-            try:
-                self.LOG.info(f"开始处理图片: {image_url}")
-                # 谷歌API直接返回本地文件路径，无需下载
-                image_path = image_url if service_type == 'gemini' else service.download_image(image_url)
-                
-                if image_path:
-                    # 创建一个临时副本，避免文件占用问题
-                    temp_dir = os.path.dirname(image_path)
-                    file_ext = os.path.splitext(image_path)[1]
-                    temp_copy = os.path.join(
-                        temp_dir,
-                        f"temp_{service_type}_{int(time.time())}_{random.randint(1000, 9999)}{file_ext}"
-                    )
-                    
-                    try:
-                        # 创建文件副本
-                        shutil.copy2(image_path, temp_copy)
-                        self.LOG.info(f"创建临时副本: {temp_copy}")
-                        
-                        # 发送临时副本
-                        self.LOG.info(f"发送图片到 {receiver}: {temp_copy}")
-                        self.wcf.send_image(temp_copy, receiver)
-                        
-                        # 等待一小段时间确保微信API完成处理
-                        time.sleep(1.5)
-                        
-                    except Exception as e:
-                        self.LOG.error(f"创建或发送临时副本失败: {str(e)}")
-                        # 如果副本处理失败，尝试直接发送原图
-                        self.LOG.info(f"尝试直接发送原图: {image_path}")
-                        self.wcf.send_image(image_path, receiver)
-                    
-                    # 安全删除文件
-                    self._safe_delete_file(image_path)
-                    if os.path.exists(temp_copy):
-                        self._safe_delete_file(temp_copy)
-                                   
-                else:
-                    self.LOG.warning(f"图片下载失败，发送URL链接作为备用: {image_url}")
-                    self.sendTextMsg(f"图像已生成，但无法自动显示，点链接也能查看:\n{image_url}", receiver, at_user)
-            except Exception as e:
-                self.LOG.error(f"发送图片过程出错: {str(e)}")
-                self.sendTextMsg(f"图像已生成，但发送过程出错，点链接也能查看:\n{image_url}", receiver, at_user)
-        else:
-            self.LOG.error(f"图像生成失败: {image_url}")
-            self.sendTextMsg(f"图像生成失败: {image_url}", receiver, at_user)
-        
-        return True
-
-    def _safe_delete_file(self, file_path, max_retries=3, retry_delay=1.0):
-        """安全删除文件，带有重试机制
-        
-        :param file_path: 要删除的文件路径
-        :param max_retries: 最大重试次数
-        :param retry_delay: 重试间隔(秒)
-        :return: 是否成功删除
-        """
-        if not os.path.exists(file_path):
-            return True
-            
-        for attempt in range(max_retries):
-            try:
-                os.remove(file_path)
-                self.LOG.info(f"成功删除文件: {file_path}")
-                return True
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    self.LOG.warning(f"删除文件 {file_path} 失败, 将在 {retry_delay} 秒后重试: {str(e)}")
-                    time.sleep(retry_delay)
-                else:
-                    self.LOG.error(f"无法删除文件 {file_path} 经过 {max_retries} 次尝试: {str(e)}")
-        
         return False
 
     def get_bot_help_info(self) -> str:
@@ -330,6 +182,7 @@ class Robot(Job):
             "▶️ 偷袭@XX / 偷分@XX - 尝试偷取积分",
             "▶️ 决斗排行/排行榜",
             "▶️ 我的战绩/决斗战绩",
+            "▶️ 我的装备/查看装备",
             "▶️ 改名 旧名 新名 - 更新昵称",
             "",
             "",
@@ -533,9 +386,9 @@ class Robot(Job):
             items = player_data["items"]
             result = [
                 f"🧙‍♂️ {player_name} 的魔法装备:",
-                f"🪄 老魔杖: {items['elder_wand']}次 (胜利积分×10)",
-                f"💎 魔法石: {items['magic_stone']}次 (失败不扣分)",
-                f"🧥 隐身衣: {items['invisibility_cloak']}次 (自动获胜)"
+                f"🪄 老魔杖: {items['elder_wand']}次 ",
+                f"💎 魔法石: {items['magic_stone']}次",
+                f"🧥 隐身衣: {items['invisibility_cloak']}次 "
             ]
             
             self.sendTextMsg("\n".join(result), msg.roomid)
@@ -553,7 +406,7 @@ class Robot(Job):
         if content.startswith(aliyun_trigger):
             prompt = content[len(aliyun_trigger):].strip()
             if prompt:
-                result = self.handle_image_generation('aliyun', prompt, msg.roomid, msg.sender)
+                result = self.image_manager.handle_image_generation('aliyun', prompt, msg.roomid, msg.sender)
                 if result:
                     self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
                     return True
@@ -562,7 +415,7 @@ class Robot(Job):
         elif content.startswith(cogview_trigger):
             prompt = content[len(cogview_trigger):].strip()
             if prompt:
-                result = self.handle_image_generation('cogview', prompt, msg.roomid, msg.sender)
+                result = self.image_manager.handle_image_generation('cogview', prompt, msg.roomid, msg.sender)
                 if result:
                     self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
                     return True
@@ -571,7 +424,7 @@ class Robot(Job):
         elif content.startswith(gemini_trigger):
             prompt = content[len(gemini_trigger):].strip()
             if prompt:
-                result = self.handle_image_generation('gemini', prompt, msg.roomid or msg.sender, msg.sender if msg.roomid else None)
+                result = self.image_manager.handle_image_generation('gemini', prompt, msg.roomid or msg.sender, msg.sender if msg.roomid else None)
                 if result and msg.from_group():
                     self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
                 return True
@@ -881,7 +734,7 @@ class Robot(Job):
                     if msg.content.startswith(aliyun_trigger):
                         prompt = msg.content[len(aliyun_trigger):].strip()
                         if prompt:
-                            result = self.handle_image_generation('aliyun', prompt, msg.sender)
+                            result = self.image_manager.handle_image_generation('aliyun', prompt, msg.sender)
                             if result:
                                 return
                     
@@ -890,7 +743,7 @@ class Robot(Job):
                     if msg.content.startswith(cogview_trigger):
                         prompt = msg.content[len(cogview_trigger):].strip()
                         if prompt:
-                            result = self.handle_image_generation('cogview', prompt, msg.sender)
+                            result = self.image_manager.handle_image_generation('cogview', prompt, msg.sender)
                             if result:
                                 return
                     
@@ -899,7 +752,7 @@ class Robot(Job):
                     if msg.content.startswith(gemini_trigger):
                         prompt = msg.content[len(gemini_trigger):].strip()
                         if prompt:
-                            result = self.handle_image_generation('gemini', prompt, msg.sender)
+                            result = self.image_manager.handle_image_generation('gemini', prompt, msg.sender)
                             if result:
                                 return
                     
@@ -1133,6 +986,20 @@ class Robot(Job):
             else:
                 self.LOG.info("决斗线程已结束")
                 
+    def cleanup(self):
+        """清理所有资源，在程序退出前调用"""
+        self.LOG.info("开始清理机器人资源...")
+        
+        # 清理Perplexity线程
+        self.cleanup_perplexity_threads()
+        
+        # 关闭消息历史数据库连接
+        if hasattr(self, 'message_summary') and self.message_summary:
+            self.LOG.info("正在关闭消息历史数据库...")
+            self.message_summary.close_db()
+        
+        self.LOG.info("机器人资源清理完成")
+                
     def get_perplexity_instance(self):
         """获取Perplexity实例
         
@@ -1167,76 +1034,8 @@ class Robot(Job):
         Args:
             msg: 微信消息对象
         """
-        # 检查配置是否存在
-        if not hasattr(self.config, 'GOBLIN_GIFT'):
-            return
-        
-        # 检查全局开关
-        if not self.config.GOBLIN_GIFT.get('enable', False):
-            return
-        
-        # 检查群聊白名单
-        allowed_groups = self.config.GOBLIN_GIFT.get('allowed_groups', [])
-        if not allowed_groups or msg.roomid not in allowed_groups:
-            return
-        
-        # 只在群聊中才触发
-        if not msg.from_group():
-            return
-        
-        # 获取触发概率，默认1%
-        probability = self.config.GOBLIN_GIFT.get('probability', 0.01)
-        
-        # 按概率触发
-        if random.random() < probability:
-            try:
-                # 获取玩家昵称
-                player_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
-                if not player_name:
-                    player_name = msg.sender  # 如果获取不到昵称，用wxid代替
-                
-                # 初始化对应群聊的积分系统
-                from base.func_duel import DuelRankSystem
-                rank_system = DuelRankSystem(group_id=msg.roomid)
-                
-                # 获取配置的积分范围，默认10-100
-                min_points = self.config.GOBLIN_GIFT.get('min_points', 10)
-                max_points = self.config.GOBLIN_GIFT.get('max_points', 100)
-                
-                # 随机增加积分
-                points_added = random.randint(min_points, max_points)
-                
-                # 更新玩家数据
-                player_data = rank_system.get_player_data(player_name)
-                player_data['score'] += points_added
-                
-                # 保存数据
-                rank_system._save_ranks()
-                
-                # 准备随机馈赠消息
-                gift_sources = [
-                    f"✨ 一只迷路的家养小精灵往 {player_name} 口袋里塞了什么东西！",
-                    f"💰 古灵阁的妖精似乎格外青睐 {player_name}，留下了一袋金加隆（折合积分）！",
-                    f"🦉 一只送信的猫头鹰丢错了包裹，{player_name} 意外发现了一笔“意外之财”！",
-                    f"🍀 {player_name} 踩到了一株幸运四叶草，好运带来了额外的积分！",
-                    f"🍄 在禁林的边缘，{player_name} 发现了一簇闪闪发光的魔法蘑菇！",
-                    f"❓ {player_name} 捡到了一个有求必应屋掉出来的神秘物品！",
-                    f"🔮 временами удача улыбается {player_name}!",  # 偶尔来点不一样的语言增加神秘感
-                    f"🎉 费尔奇打瞌睡时掉了一小袋没收来的积分，刚好被 {player_name} 捡到！",
-                    f"📜 一张古老的藏宝图碎片指引 {player_name} 找到了一些失落的积分！",
-                    f"🧙‍♂️ 邓布利多教授对 {player_name} 的行为表示赞赏，特批“为学院加分”！",
-                    f"🧪 {player_name} 的魔药课作业获得了斯拉格霍恩教授的额外加分！",
-                    f"🌟 一颗流星划过霍格沃茨上空，{player_name} 许下的愿望成真了！"
-                ]
-                gift_message = random.choice(gift_sources)
-                final_message = f"{gift_message}\n获得积分: +{points_added} 分！"
-                
-                # 发送馈赠通知 (@发送者)
-                self.sendTextMsg(final_message, msg.roomid, msg.sender)
-                self.LOG.info(f"古灵阁馈赠触发: 群 {msg.roomid}, 用户 {player_name}, 获得 {points_added} 积分")
-                
-            except Exception as e:
-                self.LOG.error(f"触发古灵阁馈赠时出错: {e}")
+        # 调用管理器的触发方法
+        self.goblin_gift_manager.try_trigger(msg)
 
     def _select_model_for_message(self, msg: WxMsg) -> None:
         """根据消息来源选择对应的AI模型

@@ -4,26 +4,85 @@ import logging
 import time
 import re
 from collections import deque
-from threading import Lock
+# from threading import Lock  # 不再需要锁，使用SQLite的事务机制
+import sqlite3  # 添加sqlite3模块
+import os  # 用于处理文件路径
 
 class MessageSummary:
-    """消息总结功能类
+    """消息总结功能类 (使用SQLite持久化)
     用于记录、管理和生成聊天历史消息的总结
     """
     
-    def __init__(self, max_history=200):
+    def __init__(self, max_history=200, db_path="data/message_history.db"):
         """初始化消息总结功能
         
         Args:
             max_history: 每个聊天保存的最大消息数量
+            db_path: SQLite数据库文件路径
         """
         self.LOG = logging.getLogger("MessageSummary")
-        self._msg_history = {}  # 使用字典，以群ID或用户ID为键
-        self._msg_history_lock = Lock()  # 添加锁以保证线程安全
         self.max_history = max_history
+        self.db_path = db_path
+        
+        # 移除旧的内存存储相关代码
+        # self._msg_history = {}  # 使用字典，以群ID或用户ID为键
+        # self._msg_history_lock = Lock()  # 添加锁以保证线程安全
+        
+        try:
+            # 确保数据库文件所在的目录存在
+            db_dir = os.path.dirname(self.db_path)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir)
+                self.LOG.info(f"创建数据库目录: {db_dir}")
+                
+            # 连接到数据库 (如果文件不存在会自动创建)
+            # check_same_thread=False 允许在不同线程中使用此连接
+            # 这在多线程机器人应用中是必要的，但要注意事务管理
+            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self.cursor = self.conn.cursor()
+            self.LOG.info(f"已连接到 SQLite 数据库: {self.db_path}")
+            
+            # 创建消息表 (如果不存在)
+            # 使用 INTEGER PRIMARY KEY AUTOINCREMENT 作为 rowid 的别名，方便管理
+            # timestamp_float 用于排序和限制数量
+            # timestamp_str 用于显示
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    sender TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    timestamp_float REAL NOT NULL,
+                    timestamp_str TEXT NOT NULL
+                )
+            """)
+            # 为 chat_id 和 timestamp_float 创建索引，提高查询效率
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chat_time ON messages (chat_id, timestamp_float)
+            """)
+            self.conn.commit() # 提交更改
+            self.LOG.info("消息表已准备就绪")
+            
+        except sqlite3.Error as e:
+            self.LOG.error(f"数据库初始化失败: {e}")
+            # 如果数据库连接失败，抛出异常或进行其他错误处理
+            raise ConnectionError(f"无法连接或初始化数据库: {e}") from e
+        except OSError as e:
+            self.LOG.error(f"创建数据库目录失败: {e}")
+            raise OSError(f"无法创建数据库目录: {e}") from e
+    
+    def close_db(self):
+        """关闭数据库连接"""
+        if hasattr(self, 'conn') and self.conn:
+            try:
+                self.conn.commit() # 确保所有更改都已保存
+                self.conn.close()
+                self.LOG.info("数据库连接已关闭")
+            except sqlite3.Error as e:
+                self.LOG.error(f"关闭数据库连接时出错: {e}")
         
     def record_message(self, chat_id, sender_name, content, timestamp=None):
-        """记录单条消息到历史记录
+        """记录单条消息到数据库
         
         Args:
             chat_id: 聊天ID（群ID或用户ID）
@@ -31,20 +90,44 @@ class MessageSummary:
             content: 消息内容
             timestamp: 时间戳，默认为当前时间
         """
-        if not timestamp:
-            timestamp = time.strftime("%H:%M", time.localtime())
+        try:
+            # 生成浮点数时间戳用于排序
+            current_time_float = time.time()
             
-        with self._msg_history_lock:
-            # 如果该聊天没有历史记录，创建一个新的队列
-            if chat_id not in self._msg_history:
-                self._msg_history[chat_id] = deque(maxlen=self.max_history)
+            # 生成或使用传入的时间字符串
+            if not timestamp:
+                timestamp_str = time.strftime("%H:%M", time.localtime(current_time_float))
+            else:
+                timestamp_str = timestamp
                 
-            # 记录消息，包含发送者昵称和内容
-            self._msg_history[chat_id].append({
-                "sender": sender_name,
-                "content": content,
-                "time": timestamp
-            })
+            # 插入新消息
+            self.cursor.execute("""
+                INSERT INTO messages (chat_id, sender, content, timestamp_float, timestamp_str)
+                VALUES (?, ?, ?, ?, ?)
+            """, (chat_id, sender_name, content, current_time_float, timestamp_str))
+            
+            # 删除超出 max_history 的旧消息
+            # 使用子查询找到要保留的最新 N 条消息的 id，然后删除不在这个列表中的该 chat_id 的其他消息
+            self.cursor.execute("""
+                DELETE FROM messages
+                WHERE chat_id = ? AND id NOT IN (
+                    SELECT id
+                    FROM messages
+                    WHERE chat_id = ?
+                    ORDER BY timestamp_float DESC
+                    LIMIT ?
+                )
+            """, (chat_id, chat_id, self.max_history))
+            
+            self.conn.commit() # 提交事务
+            
+        except sqlite3.Error as e:
+            self.LOG.error(f"记录消息到数据库时出错: {e}")
+            # 可以考虑回滚事务
+            try:
+                self.conn.rollback()
+            except:
+                pass
     
     def clear_message_history(self, chat_id):
         """清除指定聊天的消息历史记录
@@ -55,10 +138,16 @@ class MessageSummary:
         Returns:
             bool: 是否成功清除
         """
-        with self._msg_history_lock:
-            if chat_id in self._msg_history:
-                self._msg_history[chat_id].clear()
-                return True
+        try:
+            # 删除指定chat_id的所有消息
+            self.cursor.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+            rows_deleted = self.cursor.rowcount # 获取删除的行数
+            self.conn.commit()
+            self.LOG.info(f"为 chat_id={chat_id} 清除了 {rows_deleted} 条历史消息")
+            return True # 删除0条也视为成功完成操作
+            
+        except sqlite3.Error as e:
+            self.LOG.error(f"清除消息历史时出错 (chat_id={chat_id}): {e}")
             return False
     
     def get_message_count(self, chat_id):
@@ -70,24 +159,51 @@ class MessageSummary:
         Returns:
             int: 消息数量
         """
-        with self._msg_history_lock:
-            if chat_id in self._msg_history:
-                return len(self._msg_history[chat_id])
+        try:
+            # 使用COUNT查询获取消息数量
+            self.cursor.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ?", (chat_id,))
+            result = self.cursor.fetchone() # fetchone() 返回一个元组，例如 (5,)
+            return result[0] if result else 0
+            
+        except sqlite3.Error as e:
+            self.LOG.error(f"获取消息数量时出错 (chat_id={chat_id}): {e}")
             return 0
     
     def get_messages(self, chat_id):
-        """获取指定聊天的所有消息
+        """获取指定聊天的所有消息 (按时间升序)
         
         Args:
             chat_id: 聊天ID（群ID或用户ID）
             
         Returns:
-            list: 消息列表的副本
+            list: 消息列表，格式为 [{"sender": ..., "content": ..., "time": ...}]
         """
-        with self._msg_history_lock:
-            if chat_id in self._msg_history:
-                return list(self._msg_history[chat_id])
-            return []
+        messages = []
+        try:
+            # 查询需要的字段，按浮点时间戳升序排序，限制数量
+            self.cursor.execute("""
+                SELECT sender, content, timestamp_str
+                FROM messages
+                WHERE chat_id = ?
+                ORDER BY timestamp_float ASC
+                LIMIT ?
+            """, (chat_id, self.max_history))
+            
+            rows = self.cursor.fetchall() # fetchall() 返回包含元组的列表
+            
+            # 将数据库行转换为期望的字典列表格式
+            for row in rows:
+                messages.append({
+                    "sender": row[0],
+                    "content": row[1],
+                    "time": row[2] # 使用存储的 timestamp_str
+                })
+                
+        except sqlite3.Error as e:
+            self.LOG.error(f"获取消息列表时出错 (chat_id={chat_id}): {e}")
+            # 出错时返回空列表，保持与原逻辑一致
+            
+        return messages
     
     def _basic_summarize(self, messages):
         """基本的消息总结逻辑，不使用AI

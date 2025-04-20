@@ -13,14 +13,23 @@ from wcferry import Wcf
 def main(chat_type: int):
     config = Config()
     wcf = Wcf(debug=True)
+    
+    # 定义全局变量robot，使其在handler中可访问
+    global robot
+    robot = Robot(config, wcf, chat_type)
 
     def handler(sig, frame):
+        # 先清理机器人资源（包括关闭数据库连接）
+        if 'robot' in globals() and robot:
+            robot.LOG.info("程序退出，开始清理资源...")
+            robot.cleanup()
+            
+        # 再清理wcf环境
         wcf.cleanup()  # 退出前清理环境
         exit(0)
 
     signal.signal(signal.SIGINT, handler)
 
-    robot = Robot(config, wcf, chat_type)
     robot.LOG.info(f"WeChatRobot【{__version__}】成功启动···")
 
     # 机器人启动发送测试消息
