@@ -602,51 +602,67 @@ class Robot(Job):
         if not self.chat:  # 没接 ChatGPT，固定回复
             rsp = "你@我干嘛？"
         else:  # 接了 ChatGPT，智能回复
-            # 提取消息内容，处理引用消息的特殊情况
-            user_msg = ""
-            
-            # 处理类型49的消息（引用、卡片、链接等）
-            if msg.type == 49 and ("<title>" in msg.content or "<appmsg" in msg.content):
-                # 从title标签提取用户实际消息
-                title_match = re.search(r'<title>(.*?)</title>', msg.content)
-                if title_match:
-                    user_msg = title_match.group(1).strip()
-                    # 删除可能的@机器人前缀
-                    user_msg = re.sub(r'^@[\w\s]+\s+', '', user_msg).strip()
-                    
-                    # 记录提取到的用户消息
-                    self.LOG.info(f"从title标签中提取到用户消息: {user_msg}")
-                else:
-                    self.LOG.warning("引用消息中没有找到title标签内容")
-            else:
-                # 普通消息情况，去除@标记
-                user_msg = re.sub(r"@.*?[\u2005|\s]", "", msg.content).strip()
-            
-            # 处理可能存在的引用消息
-            quoted_content = self._extract_quoted_message(msg)
-            
             # 获取发送者昵称
             if msg.from_group():
                 sender_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
             else:
                 sender_name = self.allContacts.get(msg.sender, "用户")
             
-            # 添加时间戳和发送者信息到用户消息前面
-            current_time = time.strftime("%H:%M", time.localtime())
-            
-            # 构建完整消息，包含用户消息和引用内容（如果有）
-            if not user_msg and quoted_content:
-                # 如果没有提取到用户消息但有引用内容，可能是纯引用消息
-                self.LOG.info(f"处理纯引用消息: 用户={sender_name}, 引用=【{quoted_content}】")
-                q_with_info = f"[{current_time}] {sender_name} 分享了内容: {quoted_content}"
-            elif quoted_content:
-                # 有用户消息和引用内容
-                self.LOG.info(f"处理带引用的消息: 用户={sender_name}, 消息={user_msg}, 引用=【{quoted_content}】")
-                q_with_info = f"[{current_time}] {sender_name}: {user_msg}\n\n[用户引用] {quoted_content}"
+            # 根据是否为群聊分别处理
+            if msg.from_group():
+                # 处理群聊消息
+                self.LOG.info(f"处理群聊消息: 群ID={msg.roomid}, 发送者={msg.sender}, 类型={msg.type}")
+                
+                # 提取消息内容
+                msg_data = self._extract_quoted_message(msg)
+                
+                # 如果没有从结构化提取中获取到用户消息，尝试从原始内容中提取
+                if not msg_data["new_content"]:
+                    # 处理类型49的消息（引用、卡片、链接等）
+                    if msg.type == 49 and ("<title>" in msg.content or "<appmsg" in msg.content):
+                        # 从title标签提取用户实际消息
+                        title_match = re.search(r'<title>(.*?)</title>', msg.content)
+                        if title_match:
+                            msg_data["new_content"] = title_match.group(1).strip()
+                            # 删除可能的@机器人前缀
+                            msg_data["new_content"] = re.sub(r'^@[\w\s]+\s+', '', msg_data["new_content"]).strip()
+                    else:
+                        # 普通消息情况，去除@标记
+                        msg_data["new_content"] = re.sub(r"@.*?[\u2005|\s]", "", msg.content).strip()
+                
+                # 格式化消息为AI可处理的文本
+                q_with_info = self._format_message_for_ai(msg_data, sender_name)
+                
+                # 如果格式化后的消息为空，构造一个基本消息
+                if not q_with_info:
+                    current_time = time.strftime("%H:%M", time.localtime())
+                    q_with_info = f"[{current_time}] {sender_name}: [空内容]"
+                
             else:
-                # 只有用户消息
-                q_with_info = f"[{current_time}] {sender_name}: {user_msg}"
+                # 处理私聊消息
+                self.LOG.info(f"处理私聊消息: 发送者={msg.sender}, 类型={msg.type}")
+                
+                # 使用专门的私聊消息处理函数
+                msg_data = self._extract_private_quoted_message(msg)
+                
+                # 如果没有从结构化提取中获取到用户消息，尝试从原始内容中提取
+                if not msg_data["new_content"] and msg.type == 0x01:
+                    # 处理纯文本消息
+                    msg_data["new_content"] = msg.content.strip()
+                
+                # 格式化消息为AI可处理的文本
+                q_with_info = self._format_message_for_ai(msg_data, sender_name)
+                
+                # 如果格式化后的消息为空，构造一个基本消息
+                if not q_with_info:
+                    current_time = time.strftime("%H:%M", time.localtime())
+                    media_type = msg_data["media_type"] if msg_data["media_type"] != "文本" else "消息"
+                    q_with_info = f"[{current_time}] {sender_name} 发送了 [{media_type}]"
             
+            # 记录最终发送给AI的消息内容
+            self.LOG.info(f"发送给AI的消息内容: {q_with_info}")
+            
+            # 获取AI回复
             rsp = self.chat.get_answer(q_with_info, (msg.roomid if msg.from_group() else msg.sender))
 
         if rsp:
@@ -660,245 +676,357 @@ class Robot(Job):
             self.LOG.error(f"无法从 ChatGPT 获得答案")
             return False
 
-    def _extract_quoted_message(self, msg: WxMsg) -> str:
+    def _extract_quoted_message(self, msg: WxMsg) -> dict:
         """从微信消息中提取引用内容
         
         Args:
             msg: 微信消息对象
             
         Returns:
-            str: 提取的引用内容，如果没有引用返回空字符串
+            dict: {
+                "new_content": "",     # 用户新发送的内容
+                "quoted_content": "",  # 引用的内容
+                "quoted_sender": "",   # 被引用消息的发送者
+                "media_type": "",      # 媒体类型（文本/图片/视频/链接等）
+                "has_quote": False,    # 是否包含引用
+                "is_card": False,      # 是否为卡片消息
+                "card_type": "",       # 卡片类型
+                "card_title": "",      # 卡片标题
+                "card_description": "", # 卡片描述
+                "card_url": "",        # 卡片链接
+                "card_appname": "",    # 卡片来源应用
+                "card_sourcedisplayname": "", # 来源显示名称
+                "quoted_is_card": False,    # 被引用的内容是否为卡片
+                "quoted_card_type": "",     # 被引用的卡片类型
+                "quoted_card_title": "",    # 被引用的卡片标题
+                "quoted_card_description": "", # 被引用的卡片描述
+                "quoted_card_url": "",      # 被引用的卡片链接
+                "quoted_card_appname": "",  # 被引用的卡片来源应用
+                "quoted_card_sourcedisplayname": "" # 被引用的来源显示名称
+            }
         """
+        result = {
+            "new_content": "",
+            "quoted_content": "",
+            "quoted_sender": "",
+            "media_type": "文本",
+            "has_quote": False,
+            "is_card": False,
+            "card_type": "",
+            "card_title": "",
+            "card_description": "",
+            "card_url": "",
+            "card_appname": "",
+            "card_sourcedisplayname": "",
+            "quoted_is_card": False,
+            "quoted_card_type": "",
+            "quoted_card_title": "",
+            "quoted_card_description": "",
+            "quoted_card_url": "",
+            "quoted_card_appname": "",
+            "quoted_card_sourcedisplayname": ""
+        }
+        
         try:
             # 检查消息类型
             if msg.type != 0x01 and msg.type != 49:  # 普通文本消息或APP消息
-                return ""
+                return result
             
-            # 记录调试信息，帮助排查私聊问题    
-            is_group = msg.from_group()
-            chat_id = msg.roomid if is_group else msg.sender
-            self.LOG.info(f"尝试提取引用消息: 消息类型={msg.type}, 是否群聊={is_group}, 接收ID={chat_id}")
-                
-            # 检查是否包含XML格式的内容 - 增强检测能力
-            has_xml = (msg.content.startswith("<?xml") or 
-                       msg.content.startswith("<msg>") or 
-                       "<appmsg" in msg.content or 
-                       "<refermsg>" in msg.content)
-            has_refer = ("<refermsg>" in msg.content or 
-                         "引用" in msg.content or 
-                         "回复" in msg.content)
+            self.LOG.info(f"处理群聊消息: 类型={msg.type}, 发送者={msg.sender}")
             
-            # 如果非XML且无引用标记，快速返回
-            if not (has_xml or has_refer):
-                return ""
-                
-            self.LOG.info(f"检测到可能包含引用的消息: 类型={msg.type}, XML={has_xml}, 引用={has_refer}, 内容前100字符: {msg.content[:100]}")
-                
-            # 解析XML内容
-            import xml.etree.ElementTree as ET
+            # 检查是否为引用消息类型 (type 57)
+            is_quote_msg = False
+            appmsg_type_match = re.search(r'<appmsg.*?type="(\d+)"', msg.content, re.DOTALL)
+            if appmsg_type_match and appmsg_type_match.group(1) == "57":
+                is_quote_msg = True
+                self.LOG.info("检测到引用类型消息 (type 57)")
             
-            # 处理微信消息可能的格式，特别是私聊消息
-            xml_content = msg.content
+            # 检查是否包含refermsg标签
+            has_refermsg = "<refermsg>" in msg.content
             
-            # 有时私聊消息会有额外的前缀，尝试找到XML的开始位置
-            if not (msg.content.startswith("<?xml") or msg.content.startswith("<msg>")):
-                xml_start_tags = ["<msg>", "<appmsg", "<?xml", "<refermsg>"]
-                for tag in xml_start_tags:
-                    pos = msg.content.find(tag)
-                    if pos >= 0:
-                        xml_content = msg.content[pos:]
-                        self.LOG.info(f"找到XML开始标签 {tag} 位置 {pos}, 截取后内容长度: {len(xml_content)}")
-                        break
-                
-                # 如果找到了XML开始但不是标准XML声明，添加声明
-                if not xml_content.startswith("<?xml"):
-                    xml_content = f"<?xml version='1.0'?>\n{xml_content}"
+            # 确定是否是引用操作
+            is_referring = is_quote_msg or has_refermsg
+            
+            # 处理App类型消息（类型49）
+            if msg.type == 49:
+                if not is_referring:
+                    # 如果不是引用消息，按普通卡片处理
+                    card_details = self._extract_card_details(msg.content)
+                    result.update(card_details)
                     
-            # 尝试清理可能导致解析失败的字符
-            xml_content = self._clean_xml_for_parsing(xml_content)
+                    # 根据卡片类型更新媒体类型
+                    if card_details["is_card"] and card_details["card_type"]:
+                        result["media_type"] = card_details["card_type"]
+                
+                # 引用消息情况下，我们不立即更新result的卡片信息，因为外层appmsg是引用容器
+            
+            # 处理用户新输入内容
+            # 优先检查是否有<title>标签内容
+            title_match = re.search(r'<title>(.*?)</title>', msg.content)
+            if title_match:
+                # 对于引用消息，从title标签提取用户新输入
+                if is_referring:
+                    result["new_content"] = title_match.group(1).strip()
+                    self.LOG.info(f"引用消息中的新内容: {result['new_content']}")
+                else:
+                    # 对于普通卡片消息，避免将card_title重复设为new_content
+                    extracted_title = title_match.group(1).strip()
+                    if not (result["is_card"] and result["card_title"] == extracted_title):
+                        result["new_content"] = extracted_title
+                        self.LOG.info(f"从title标签提取到用户新消息: {result['new_content']}")
+            elif msg.type == 0x01:  # 纯文本消息
+                # 检查是否有XML标签，如果没有则视为普通消息
+                if not ("<" in msg.content and ">" in msg.content):
+                    result["new_content"] = msg.content
+                    return result
+            
+            # 如果是引用消息，处理refermsg部分
+            if is_referring:
+                result["has_quote"] = True
+                
+                # 提取refermsg内容
+                refer_data = self._extract_refermsg(msg.content)
+                result["quoted_sender"] = refer_data.get("sender", "")
+                result["quoted_content"] = refer_data.get("content", "")
+                
+                # 从raw_content尝试解析被引用内容的卡片信息
+                raw_content = refer_data.get("raw_content", "")
+                if raw_content and "<appmsg" in raw_content:
+                    quoted_card_details = self._extract_card_details(raw_content)
                     
-            # 尝试解析XML
-            root = None
-            try:
-                root = ET.fromstring(xml_content)
-                self.LOG.info("成功解析XML内容")
-            except ET.ParseError as e:
-                self.LOG.warning(f"初次解析XML失败: {e}, 尝试进一步修复")
-                # 尝试更激进的清理
-                xml_content = xml_content.replace("&", "&amp;").replace("<!", "<!--").replace("![", "<!--[").replace("]>", "]-->")
-                try:
-                    root = ET.fromstring(xml_content)
-                    self.LOG.info("在进行额外清理后成功解析XML")
-                except ET.ParseError as e2:
-                    self.LOG.error(f"解析引用消息XML失败: {e2}, 原始内容: {msg.content[:100]}...")
-                    return self._extract_quoted_fallback(msg.content)
+                    # 将引用的卡片详情存储到quoted_前缀的字段
+                    result["quoted_is_card"] = quoted_card_details["is_card"]
+                    result["quoted_card_type"] = quoted_card_details["card_type"]
+                    result["quoted_card_title"] = quoted_card_details["card_title"]
+                    result["quoted_card_description"] = quoted_card_details["card_description"]
+                    result["quoted_card_url"] = quoted_card_details["card_url"]
+                    result["quoted_card_appname"] = quoted_card_details["card_appname"]
+                    result["quoted_card_sourcedisplayname"] = quoted_card_details["card_sourcedisplayname"]
+                    
+                    # 如果没有提取到有效内容，使用卡片标题作为quoted_content
+                    if not result["quoted_content"] and quoted_card_details["card_title"]:
+                        result["quoted_content"] = quoted_card_details["card_title"]
+                        
+                    self.LOG.info(f"成功从引用内容中提取卡片信息: {quoted_card_details['card_type']}")
+                else:
+                    # 如果未发现卡片特征，尝试fallback方法
+                    if not result["quoted_content"]:
+                        fallback_content = self._extract_quoted_fallback(msg.content)
+                        if fallback_content:
+                            if fallback_content.startswith("引用内容:") or fallback_content.startswith("相关内容:"):
+                                result["quoted_content"] = fallback_content.split(":", 1)[1].strip()
+                            else:
+                                result["quoted_content"] = fallback_content
             
-            if root is None:
-                self.LOG.error("无法解析XML内容")
-                return self._extract_quoted_fallback(msg.content)
+            # 设置媒体类型
+            if result["is_card"] and result["card_type"]:
+                result["media_type"] = result["card_type"]
+            elif is_referring and result["quoted_is_card"]:
+                # 如果当前消息是引用，且引用的是卡片，则媒体类型设为"引用消息"
+                result["media_type"] = "引用消息"
+            else:
+                # 普通消息，使用群聊消息类型识别
+                result["media_type"] = self._identify_message_type(msg.content)
             
-            # 记录解析后的XML结构用于调试
-            try:
-                self.LOG.debug(f"解析后的XML根节点标签: {root.tag}")
-            except:
-                pass
-            
-            # 提取引用内容 - 处理多种可能的XML结构，包括私聊特有格式
-            extracted_content = ""
-            
-            # 方式1: 直接在根节点查找refermsg
-            extracted_content = self._extract_from_refermsg(root)
-            if extracted_content:
-                return extracted_content
-            
-            # 方式2: 在appmsg中查找refermsg
-            appmsg = root.find(".//appmsg")
-            if appmsg is not None:
-                # 首先检查标题
-                title = appmsg.find("title")
-                title_text = title.text if title is not None and title.text else ""
-                
-                # 从appmsg的refermsg中提取
-                extracted_content = self._extract_from_refermsg(appmsg)
-                if extracted_content:
-                    return extracted_content
-                
-                # 如果有标题但没有提取到refermsg内容
-                if title_text:
-                    self.LOG.info(f"只找到appmsg标题: {title_text}")
-                    # 查找是否有标记为title的引用内容
-                    if "引用" in title_text or "回复" in title_text:
-                        return f"引用内容: {title_text}"
-                    return f"相关内容: {title_text}"
-            
-            # 方式3: 寻找任何可能包含引用信息的元素
-            if "引用" in xml_content or "回复" in xml_content:
-                for elem in root.findall(".//*"):
-                    if elem.text and ("引用" in elem.text or "回复" in elem.text):
-                        self.LOG.info(f"通过关键词找到可能的引用内容: {elem.text[:30]}...")
-                        return f"引用内容: {elem.text}"
-            
-            # 最后的后备方案：直接从原始内容提取
-            return self._extract_quoted_fallback(msg.content)
+            return result
             
         except Exception as e:
-            self.LOG.error(f"提取引用消息时出错: {e}")
-            # 即使出错也尝试提取
-            return self._extract_quoted_fallback(msg.content)
+            self.LOG.error(f"处理群聊引用消息时出错: {e}")
+            return result
     
-    def _extract_from_refermsg(self, element) -> str:
-        """从refermsg元素中提取引用内容
+    def _extract_refermsg(self, content: str) -> dict:
+        """专门提取群聊refermsg节点内容，包括HTML解码
         
         Args:
-            element: XML元素，可能包含refermsg子元素
+            content: 消息内容
             
         Returns:
-            str: 提取的引用内容，如果未找到返回空字符串
+            dict: {
+                "sender": "",     # 发送者
+                "content": "",    # 引用内容
+                "raw_content": "" # 解码后的原始XML内容，用于后续解析
+            }
         """
+        import html
+        
+        result = {"sender": "", "content": "", "raw_content": ""}
+        
         try:
-            refer_msg = element.find(".//refermsg")
-            if refer_msg is None:
-                return ""
+            # 使用正则表达式精确提取refermsg内容，避免完整XML解析
+            refermsg_match = re.search(r'<refermsg>(.*?)</refermsg>', content, re.DOTALL)
+            if not refermsg_match:
+                return result
                 
-            # 提取引用的发送者和内容
-            display_name = refer_msg.find("displayname")
-            content = refer_msg.find("content")
+            refermsg_content = refermsg_match.group(1)
             
-            display_name_text = display_name.text if display_name is not None and display_name.text else ""
-            content_text = content.text if content is not None and content.text else ""
+            # 提取发送者
+            displayname_match = re.search(r'<displayname>(.*?)</displayname>', refermsg_content, re.DOTALL)
+            if displayname_match:
+                result["sender"] = displayname_match.group(1).strip()
             
-            # 清理可能存在的HTML/XML标签，确保纯文本
-            if content_text:
-                content_text = re.sub(r'<.*?>', '', content_text)
-                # 去除换行符和多余空格
-                content_text = re.sub(r'\s+', ' ', content_text).strip()
-            
-            if display_name_text and content_text:
-                return f"{display_name_text}: {content_text}"
-            elif content_text:
-                return content_text
-                
-            return ""
-        except Exception as e:
-            self.LOG.error(f"从refermsg提取内容时出错: {e}")
-            return ""
-    
-    def _clean_xml_for_parsing(self, xml_content: str) -> str:
-        """清理XML内容，使其更容易被解析
-        
-        Args:
-            xml_content: 原始XML内容
-            
-        Returns:
-            str: 清理后的XML内容
-        """
-        try:
-            # 替换常见的问题字符
-            cleaned = xml_content.replace("&", "&amp;")
-            
-            # 处理CDATA部分
-            cleaned = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', cleaned, flags=re.DOTALL)
-            
-            # 移除可能导致解析问题的控制字符
-            cleaned = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', cleaned)
-            
-            # 如果清理后的内容太长，截取合理长度以提高解析效率
-            if len(cleaned) > 10000:  # 10KB上限
-                cleaned = cleaned[:10000]
-                self.LOG.warning(f"XML内容过长，已截断至10000字符")
-            
-            return cleaned
-        except Exception as e:
-            self.LOG.error(f"清理XML内容时出错: {e}")
-            return xml_content
-    
-    def _extract_quoted_fallback(self, content: str) -> str:
-        """当XML解析失败时的后备提取方法
-        
-        Args:
-            content: 原始消息内容
-            
-        Returns:
-            str: 提取的引用内容，如果未找到返回空字符串
-        """
-        try:
-            # 使用正则表达式直接从内容中提取
-            # 查找<content>标签内容
-            content_match = re.search(r'<content>(.*?)</content>', content, re.DOTALL)
+            # 提取内容并进行HTML解码
+            content_match = re.search(r'<content>(.*?)</content>', refermsg_content, re.DOTALL)
             if content_match:
-                extracted = content_match.group(1)
-                # 清理可能存在的XML标签
-                extracted = re.sub(r'<.*?>', '', extracted)
-                # 去除换行符和多余空格
-                extracted = re.sub(r'\s+', ' ', extracted).strip()
-                return extracted
+                # 获取引用的原始内容（可能是HTML编码的XML）
+                extracted_content = content_match.group(1)
                 
-            # 查找displayname和content的组合
-            display_name_match = re.search(r'<displayname>(.*?)</displayname>', content, re.DOTALL)
-            content_match = re.search(r'<content>(.*?)</content>', content, re.DOTALL)
-            
-            if display_name_match and content_match:
-                name = re.sub(r'<.*?>', '', display_name_match.group(1))
-                text = re.sub(r'<.*?>', '', content_match.group(1))
-                # 去除换行符和多余空格
-                text = re.sub(r'\s+', ' ', text).strip()
-                return f"{name}: {text}"
+                # 保存解码后的原始内容，用于后续解析
+                decoded_content = html.unescape(extracted_content)
+                result["raw_content"] = decoded_content
                 
-            # 查找引用或回复的关键词
-            if "引用" in content or "回复" in content:
-                # 寻找引用关键词后的内容
-                match = re.search(r'[引用|回复].*?[:：](.*?)(?:<|$)', content, re.DOTALL)
-                if match:
-                    text = match.group(1).strip()
-                    text = re.sub(r'<.*?>', '', text)
-                    # 去除换行符和多余空格
-                    text = re.sub(r'\s+', ' ', text).strip()
-                    return text
+                # 清理内容中的HTML标签，用于文本展示
+                cleaned_content = re.sub(r'<.*?>', '', extracted_content)
+                # 清理HTML实体编码和多余空格
+                cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
+                # 解码HTML实体
+                cleaned_content = html.unescape(cleaned_content)
+                result["content"] = cleaned_content
+                
+            return result
             
-            return ""
         except Exception as e:
-            self.LOG.error(f"后备提取引用内容时出错: {e}")
-            return ""
+            self.LOG.error(f"提取群聊refermsg内容时出错: {e}")
+            return result
+
+    def _identify_message_type(self, content: str) -> str:
+        """识别群聊消息的媒体类型
+        
+        Args:
+            content: 消息内容
+            
+        Returns:
+            str: 媒体类型描述
+        """
+        try:
+            if "<appmsg type=\"2\"" in content:
+                return "图片"
+            elif "<appmsg type=\"5\"" in content:
+                return "文件"
+            elif "<appmsg type=\"4\"" in content:
+                return "链接分享"
+            elif "<appmsg type=\"3\"" in content:
+                return "音频"
+            elif "<appmsg type=\"6\"" in content:
+                return "视频"
+            elif "<appmsg type=\"8\"" in content:
+                return "动画表情"
+            elif "<appmsg type=\"1\"" in content:
+                return "文本卡片"
+            elif "<appmsg type=\"7\"" in content:
+                return "位置分享"
+            elif "<appmsg type=\"17\"" in content:
+                return "实时位置分享"
+            elif "<appmsg type=\"19\"" in content:
+                return "频道消息"
+            elif "<appmsg type=\"33\"" in content:
+                return "小程序"
+            elif "<appmsg type=\"57\"" in content:
+                return "引用消息"
+            else:
+                return "文本"
+        except Exception as e:
+            self.LOG.error(f"识别消息类型时出错: {e}")
+            return "文本"
+    
+    def _format_message_for_ai(self, msg_data: dict, sender_name: str) -> str:
+        """将提取的消息数据格式化为发送给AI的最终文本
+        
+        Args:
+            msg_data: 提取的消息数据
+            sender_name: 发送者名称
+            
+        Returns:
+            str: 格式化后的文本
+        """
+        result = []
+        current_time = time.strftime("%H:%M", time.localtime())
+        
+        # 添加用户新消息
+        if msg_data["new_content"]:
+            result.append(f"[{current_time}] {sender_name}: {msg_data['new_content']}")
+        
+        # 处理当前消息的卡片信息（如果不是引用消息而是直接分享的卡片）
+        if msg_data["is_card"] and not msg_data["has_quote"]:
+            card_info = []
+            card_info.append(f"[卡片信息]")
+            
+            if msg_data["card_type"]:
+                card_info.append(f"类型: {msg_data['card_type']}")
+            
+            if msg_data["card_title"]:
+                card_info.append(f"标题: {msg_data['card_title']}")
+            
+            if msg_data["card_description"]:
+                # 如果描述过长，截取一部分
+                description = msg_data["card_description"]
+                if len(description) > 100:
+                    description = description[:97] + "..."
+                card_info.append(f"描述: {description}")
+            
+            if msg_data["card_appname"] or msg_data["card_sourcedisplayname"]:
+                source = msg_data["card_appname"] or msg_data["card_sourcedisplayname"]
+                card_info.append(f"来源: {source}")
+            
+            if msg_data["card_url"]:
+                # 如果URL过长，截取一部分
+                url = msg_data["card_url"]
+                if len(url) > 80:
+                    url = url[:77] + "..."
+                card_info.append(f"链接: {url}")
+            
+            # 只有当有实质性内容时才添加卡片信息
+            if len(card_info) > 1:  # 不只有[卡片信息]这一行
+                result.append("\n".join(card_info))
+        
+        # 添加引用内容（如果有）
+        if msg_data["has_quote"]:
+            quoted_header = f"[用户引用]"
+            if msg_data["quoted_sender"]:
+                quoted_header += f" {msg_data['quoted_sender']}"
+            
+            # 检查被引用内容是否为卡片
+            if msg_data["quoted_is_card"]:
+                # 格式化被引用的卡片信息
+                quoted_info = [quoted_header]
+                
+                if msg_data["quoted_card_type"]:
+                    quoted_info.append(f"类型: {msg_data['quoted_card_type']}")
+                
+                if msg_data["quoted_card_title"]:
+                    quoted_info.append(f"标题: {msg_data['quoted_card_title']}")
+                
+                if msg_data["quoted_card_description"]:
+                    # 如果描述过长，截取一部分
+                    description = msg_data["quoted_card_description"]
+                    if len(description) > 100:
+                        description = description[:97] + "..."
+                    quoted_info.append(f"描述: {description}")
+                
+                if msg_data["quoted_card_appname"] or msg_data["quoted_card_sourcedisplayname"]:
+                    source = msg_data["quoted_card_appname"] or msg_data["quoted_card_sourcedisplayname"]
+                    quoted_info.append(f"来源: {source}")
+                
+                if msg_data["quoted_card_url"]:
+                    # 如果URL过长，截取一部分
+                    url = msg_data["quoted_card_url"]
+                    if len(url) > 80:
+                        url = url[:77] + "..."
+                    quoted_info.append(f"链接: {url}")
+                
+                result.append("\n".join(quoted_info))
+            elif msg_data["quoted_content"]:
+                # 如果是普通文本引用
+                result.append(f"{quoted_header}: {msg_data['quoted_content']}")
+        
+        # 如果没有任何内容，但有媒体类型，添加基本信息
+        if not result and msg_data["media_type"] and msg_data["media_type"] != "文本":
+            result.append(f"[{current_time}] {sender_name} 发送了 [{msg_data['media_type']}]")
+        
+        # 如果完全没有内容，返回一个默认消息
+        if not result:
+            result.append(f"[{current_time}] {sender_name} 发送了消息")
+        
+        return "\n\n".join(result)
 
     def processMsg(self, msg: WxMsg) -> None:
         """当接收到消息的时候，会调用本方法。如果不实现本方法，则打印原始消息。
@@ -1385,3 +1513,417 @@ class Robot(Job):
             self.LOG.error(e)
 
         return 0
+
+    def _extract_private_quoted_message(self, msg: WxMsg) -> dict:
+        """专门处理私聊引用消息，返回结构化数据
+        
+        Args:
+            msg: 微信消息对象
+            
+        Returns:
+            dict: {
+                "new_content": "",     # 用户新发送的内容
+                "quoted_content": "",  # 引用的内容
+                "quoted_sender": "",   # 被引用消息的发送者
+                "media_type": "",      # 媒体类型（文本/图片/视频/链接等）
+                "has_quote": False,    # 是否包含引用
+                "is_card": False,      # 是否为卡片消息
+                "card_type": "",       # 卡片类型
+                "card_title": "",      # 卡片标题
+                "card_description": "", # 卡片描述
+                "card_url": "",        # 卡片链接
+                "card_appname": "",    # 卡片来源应用
+                "card_sourcedisplayname": "", # 来源显示名称
+                "quoted_is_card": False,    # 被引用的内容是否为卡片
+                "quoted_card_type": "",     # 被引用的卡片类型
+                "quoted_card_title": "",    # 被引用的卡片标题
+                "quoted_card_description": "", # 被引用的卡片描述
+                "quoted_card_url": "",      # 被引用的卡片链接
+                "quoted_card_appname": "",  # 被引用的卡片来源应用
+                "quoted_card_sourcedisplayname": "" # 被引用的来源显示名称
+            }
+        """
+        result = {
+            "new_content": "",
+            "quoted_content": "",
+            "quoted_sender": "",
+            "media_type": "文本",
+            "has_quote": False,
+            "is_card": False,
+            "card_type": "",
+            "card_title": "",
+            "card_description": "",
+            "card_url": "",
+            "card_appname": "",
+            "card_sourcedisplayname": "",
+            "quoted_is_card": False,
+            "quoted_card_type": "",
+            "quoted_card_title": "",
+            "quoted_card_description": "",
+            "quoted_card_url": "",
+            "quoted_card_appname": "",
+            "quoted_card_sourcedisplayname": ""
+        }
+        
+        try:
+            # 检查消息类型
+            if msg.type != 0x01 and msg.type != 49:  # 普通文本消息或APP消息
+                return result
+            
+            self.LOG.info(f"处理私聊消息: 类型={msg.type}, 发送者={msg.sender}")
+            
+            # 检查是否为引用消息类型 (type 57)
+            is_quote_msg = False
+            appmsg_type_match = re.search(r'<appmsg.*?type="(\d+)"', msg.content, re.DOTALL)
+            if appmsg_type_match and appmsg_type_match.group(1) == "57":
+                is_quote_msg = True
+                self.LOG.info("检测到引用类型消息 (type 57)")
+            
+            # 检查是否包含refermsg标签
+            has_refermsg = "<refermsg>" in msg.content
+            
+            # 确定是否是引用操作
+            is_referring = is_quote_msg or has_refermsg
+            
+            # 处理App类型消息（类型49）
+            if msg.type == 49:
+                if not is_referring:
+                    # 如果不是引用消息，按普通卡片处理
+                    card_details = self._extract_card_details(msg.content)
+                    result.update(card_details)
+                    
+                    # 根据卡片类型更新媒体类型
+                    if card_details["is_card"] and card_details["card_type"]:
+                        result["media_type"] = card_details["card_type"]
+                
+                # 引用消息情况下，我们不立即更新result的卡片信息，因为外层appmsg是引用容器
+            
+            # 处理用户新输入内容
+            # 优先检查是否有<title>标签内容
+            title_match = re.search(r'<title>(.*?)</title>', msg.content)
+            if title_match:
+                # 对于引用消息，从title标签提取用户新输入
+                if is_referring:
+                    result["new_content"] = title_match.group(1).strip()
+                    self.LOG.info(f"引用消息中的新内容: {result['new_content']}")
+                else:
+                    # 对于普通卡片消息，避免将card_title重复设为new_content
+                    extracted_title = title_match.group(1).strip()
+                    if not (result["is_card"] and result["card_title"] == extracted_title):
+                        result["new_content"] = extracted_title
+                        self.LOG.info(f"从title标签提取到用户新消息: {result['new_content']}")
+            elif msg.type == 0x01:  # 纯文本消息
+                # 检查是否有XML标签，如果没有则视为普通消息
+                if not ("<" in msg.content and ">" in msg.content):
+                    result["new_content"] = msg.content
+                    return result
+            
+            # 如果是引用消息，处理refermsg部分
+            if is_referring:
+                result["has_quote"] = True
+                
+                # 提取refermsg内容
+                refer_data = self._extract_private_refermsg(msg.content)
+                result["quoted_sender"] = refer_data.get("sender", "")
+                result["quoted_content"] = refer_data.get("content", "")
+                
+                # 从raw_content尝试解析被引用内容的卡片信息
+                raw_content = refer_data.get("raw_content", "")
+                if raw_content and "<appmsg" in raw_content:
+                    quoted_card_details = self._extract_card_details(raw_content)
+                    
+                    # 将引用的卡片详情存储到quoted_前缀的字段
+                    result["quoted_is_card"] = quoted_card_details["is_card"]
+                    result["quoted_card_type"] = quoted_card_details["card_type"]
+                    result["quoted_card_title"] = quoted_card_details["card_title"]
+                    result["quoted_card_description"] = quoted_card_details["card_description"]
+                    result["quoted_card_url"] = quoted_card_details["card_url"]
+                    result["quoted_card_appname"] = quoted_card_details["card_appname"]
+                    result["quoted_card_sourcedisplayname"] = quoted_card_details["card_sourcedisplayname"]
+                    
+                    # 如果没有提取到有效内容，使用卡片标题作为quoted_content
+                    if not result["quoted_content"] and quoted_card_details["card_title"]:
+                        result["quoted_content"] = quoted_card_details["card_title"]
+                        
+                    self.LOG.info(f"成功从引用内容中提取卡片信息: {quoted_card_details['card_type']}")
+                else:
+                    # 如果未发现卡片特征，尝试fallback方法
+                    if not result["quoted_content"]:
+                        fallback_content = self._extract_quoted_fallback(msg.content)
+                        if fallback_content:
+                            if fallback_content.startswith("引用内容:") or fallback_content.startswith("相关内容:"):
+                                result["quoted_content"] = fallback_content.split(":", 1)[1].strip()
+                            else:
+                                result["quoted_content"] = fallback_content
+            
+            # 设置媒体类型
+            if result["is_card"] and result["card_type"]:
+                result["media_type"] = result["card_type"]
+            elif is_referring and result["quoted_is_card"]:
+                # 如果当前消息是引用，且引用的是卡片，则媒体类型设为"引用消息"
+                result["media_type"] = "引用消息"
+            else:
+                # 普通消息，使用私聊消息类型识别
+                result["media_type"] = self._identify_private_message_type(msg.content)
+            
+            return result
+            
+        except Exception as e:
+            self.LOG.error(f"处理私聊引用消息时出错: {e}")
+            return result
+    
+    def _extract_private_refermsg(self, content: str) -> dict:
+        """专门提取私聊refermsg节点内容，包括HTML解码
+        
+        Args:
+            content: 消息内容
+            
+        Returns:
+            dict: {
+                "sender": "",     # 发送者
+                "content": "",    # 引用内容
+                "raw_content": "" # 解码后的原始XML内容，用于后续解析
+            }
+        """
+        import html
+        
+        result = {"sender": "", "content": "", "raw_content": ""}
+        
+        try:
+            # 使用正则表达式精确提取refermsg内容，避免完整XML解析
+            refermsg_match = re.search(r'<refermsg>(.*?)</refermsg>', content, re.DOTALL)
+            if not refermsg_match:
+                return result
+                
+            refermsg_content = refermsg_match.group(1)
+            
+            # 提取发送者
+            displayname_match = re.search(r'<displayname>(.*?)</displayname>', refermsg_content, re.DOTALL)
+            if displayname_match:
+                result["sender"] = displayname_match.group(1).strip()
+            
+            # 提取内容并进行HTML解码
+            content_match = re.search(r'<content>(.*?)</content>', refermsg_content, re.DOTALL)
+            if content_match:
+                # 获取引用的原始内容（可能是HTML编码的XML）
+                extracted_content = content_match.group(1)
+                
+                # 保存解码后的原始内容，用于后续解析
+                decoded_content = html.unescape(extracted_content)
+                result["raw_content"] = decoded_content
+                
+                # 清理内容中的HTML标签，用于文本展示
+                cleaned_content = re.sub(r'<.*?>', '', extracted_content)
+                # 清理HTML实体编码和多余空格
+                cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
+                # 解码HTML实体
+                cleaned_content = html.unescape(cleaned_content)
+                result["content"] = cleaned_content
+                
+            return result
+            
+        except Exception as e:
+            self.LOG.error(f"提取私聊refermsg内容时出错: {e}")
+            return result
+
+    def _identify_private_message_type(self, content: str) -> str:
+        """识别私聊消息的媒体类型
+        
+        Args:
+            content: 消息内容
+            
+        Returns:
+            str: 媒体类型描述
+        """
+        try:
+            if "<appmsg type=\"2\"" in content:
+                return "图片"
+            elif "<appmsg type=\"5\"" in content:
+                return "文件"
+            elif "<appmsg type=\"4\"" in content:
+                return "链接分享"
+            elif "<appmsg type=\"3\"" in content:
+                return "音频"
+            elif "<appmsg type=\"6\"" in content:
+                return "视频"
+            elif "<appmsg type=\"8\"" in content:
+                return "动画表情"
+            elif "<appmsg type=\"1\"" in content:
+                return "文本卡片"
+            elif "<appmsg type=\"7\"" in content:
+                return "位置分享"
+            elif "<appmsg type=\"17\"" in content:
+                return "实时位置分享"
+            elif "<appmsg type=\"19\"" in content:
+                return "频道消息"
+            elif "<appmsg type=\"33\"" in content:
+                return "小程序"
+            elif "<appmsg type=\"57\"" in content:
+                return "引用消息"
+            else:
+                return "文本"
+        except Exception as e:
+            self.LOG.error(f"识别消息类型时出错: {e}")
+            return "文本"
+    
+    def _extract_quoted_fallback(self, content: str) -> str:
+        """当XML解析失败时的后备提取方法
+        
+        Args:
+            content: 原始消息内容
+            
+        Returns:
+            str: 提取的引用内容，如果未找到返回空字符串
+        """
+        try:
+            # 使用正则表达式直接从内容中提取
+            # 查找<content>标签内容
+            content_match = re.search(r'<content>(.*?)</content>', content, re.DOTALL)
+            if content_match:
+                extracted = content_match.group(1)
+                # 清理可能存在的XML标签
+                extracted = re.sub(r'<.*?>', '', extracted)
+                # 去除换行符和多余空格
+                extracted = re.sub(r'\s+', ' ', extracted).strip()
+                return extracted
+                
+            # 查找displayname和content的组合
+            display_name_match = re.search(r'<displayname>(.*?)</displayname>', content, re.DOTALL)
+            content_match = re.search(r'<content>(.*?)</content>', content, re.DOTALL)
+            
+            if display_name_match and content_match:
+                name = re.sub(r'<.*?>', '', display_name_match.group(1))
+                text = re.sub(r'<.*?>', '', content_match.group(1))
+                # 去除换行符和多余空格
+                text = re.sub(r'\s+', ' ', text).strip()
+                return f"{name}: {text}"
+                
+            # 查找引用或回复的关键词
+            if "引用" in content or "回复" in content:
+                # 寻找引用关键词后的内容
+                match = re.search(r'[引用|回复].*?[:：](.*?)(?:<|$)', content, re.DOTALL)
+                if match:
+                    text = match.group(1).strip()
+                    text = re.sub(r'<.*?>', '', text)
+                    # 去除换行符和多余空格
+                    text = re.sub(r'\s+', ' ', text).strip()
+                    return text
+            
+            return ""
+        except Exception as e:
+            self.LOG.error(f"后备提取引用内容时出错: {e}")
+            return ""
+
+    def _extract_card_details(self, content: str) -> dict:
+        """从消息内容中提取卡片详情
+        
+        Args:
+            content: 消息内容
+            
+        Returns:
+            dict: {
+                "is_card": bool,      # 是否为卡片消息
+                "card_type": str,     # 卡片类型
+                "card_title": str,    # 卡片标题
+                "card_description": str, # 卡片描述
+                "card_url": str,      # 卡片链接
+                "card_appname": str,  # 卡片来源应用
+                "card_sourcedisplayname": str, # 来源显示名称
+            }
+        """
+        result = {
+            "is_card": False,
+            "card_type": "",
+            "card_title": "",
+            "card_description": "",
+            "card_url": "",
+            "card_appname": "",
+            "card_sourcedisplayname": ""
+        }
+        
+        try:
+            # 检查是否包含appmsg标签
+            if "<appmsg" not in content:
+                return result
+                
+            # 设置为卡片消息
+            result["is_card"] = True
+            
+            # 提取卡片类型
+            type_match = re.search(r'<appmsg.*?type="(\d+)"', content, re.DOTALL)
+            if type_match:
+                card_type_num = type_match.group(1)
+                result["card_type"] = self._get_card_type_name(card_type_num)
+            
+            # 提取标题
+            title_match = re.search(r'<appmsg.*?<title>(.*?)</title>', content, re.DOTALL)
+            if title_match:
+                result["card_title"] = title_match.group(1).strip()
+            
+            # 提取描述
+            des_match = re.search(r'<des>(.*?)</des>', content, re.DOTALL)
+            if des_match:
+                result["card_description"] = des_match.group(1).strip()
+                # 清理HTML标签和实体编码
+                result["card_description"] = re.sub(r'<.*?>', '', result["card_description"])
+                result["card_description"] = result["card_description"].replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            
+            # 提取链接
+            url_match = re.search(r'<url>(.*?)</url>', content, re.DOTALL)
+            if url_match:
+                result["card_url"] = url_match.group(1).strip()
+            
+            # 提取应用名称 - 两种可能的路径
+            appname_match = re.search(r'<appinfo>.*?<appname>(.*?)</appname>', content, re.DOTALL)
+            if appname_match:
+                result["card_appname"] = appname_match.group(1).strip()
+            else:
+                # 尝试从sourcedisplayname获取
+                source_match = re.search(r'<sourcedisplayname>(.*?)</sourcedisplayname>', content, re.DOTALL)
+                if source_match:
+                    result["card_sourcedisplayname"] = source_match.group(1).strip()
+                    if not result["card_appname"]:
+                        result["card_appname"] = result["card_sourcedisplayname"]
+            
+            # 没有提取到特定的卡片信息，可能格式不标准
+            if not (result["card_title"] or result["card_description"] or result["card_url"]):
+                self.LOG.warning(f"卡片信息提取失败，可能是非标准格式")
+                
+            return result
+                
+        except Exception as e:
+            self.LOG.error(f"提取卡片详情时出错: {e}")
+            return result
+    
+    def _get_card_type_name(self, type_num: str) -> str:
+        """根据卡片类型编号获取类型名称
+        
+        Args:
+            type_num: 类型编号
+            
+        Returns:
+            str: 类型名称
+        """
+        card_types = {
+            "1": "文本卡片",
+            "2": "图片",
+            "3": "音频",
+            "4": "视频",
+            "5": "链接",
+            "6": "文件",
+            "7": "位置",
+            "8": "表情动画",
+            "17": "实时位置",
+            "19": "频道消息",
+            "33": "小程序",
+            "36": "转账",
+            "50": "视频号",
+            "51": "直播间",
+            "57": "引用消息",
+            "62": "视频号直播",
+            "63": "视频号商品",
+            "87": "群收款",
+            "88": "语音通话"
+        }
+        
+        return card_types.get(type_num, f"未知类型({type_num})")
