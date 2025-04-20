@@ -1775,6 +1775,8 @@ class Robot(Job):
         Returns:
             str: 提取的引用内容，如果未找到返回空字符串
         """
+        import html
+        
         try:
             # 使用正则表达式直接从内容中提取
             # 查找<content>标签内容
@@ -1785,6 +1787,8 @@ class Robot(Job):
                 extracted = re.sub(r'<.*?>', '', extracted)
                 # 去除换行符和多余空格
                 extracted = re.sub(r'\s+', ' ', extracted).strip()
+                # 解码HTML实体
+                extracted = html.unescape(extracted)
                 return extracted
                 
             # 查找displayname和content的组合
@@ -1796,6 +1800,9 @@ class Robot(Job):
                 text = re.sub(r'<.*?>', '', content_match.group(1))
                 # 去除换行符和多余空格
                 text = re.sub(r'\s+', ' ', text).strip()
+                # 解码HTML实体
+                name = html.unescape(name)
+                text = html.unescape(text)
                 return f"{name}: {text}"
                 
             # 查找引用或回复的关键词
@@ -1807,6 +1814,8 @@ class Robot(Job):
                     text = re.sub(r'<.*?>', '', text)
                     # 去除换行符和多余空格
                     text = re.sub(r'\s+', ' ', text).strip()
+                    # 解码HTML实体
+                    text = html.unescape(text)
                     return text
             
             return ""
@@ -1831,6 +1840,8 @@ class Robot(Job):
                 "card_sourcedisplayname": str, # 来源显示名称
             }
         """
+        import html  # 导入html模块用于解码HTML实体
+        
         result = {
             "is_card": False,
             "card_type": "",
@@ -1859,29 +1870,38 @@ class Robot(Job):
             title_match = re.search(r'<appmsg.*?<title>(.*?)</title>', content, re.DOTALL)
             if title_match:
                 result["card_title"] = title_match.group(1).strip()
+                # 使用html.unescape解码标题中的HTML实体
+                result["card_title"] = html.unescape(result["card_title"])
             
             # 提取描述
             des_match = re.search(r'<des>(.*?)</des>', content, re.DOTALL)
             if des_match:
                 result["card_description"] = des_match.group(1).strip()
-                # 清理HTML标签和实体编码
+                # 清理HTML标签
                 result["card_description"] = re.sub(r'<.*?>', '', result["card_description"])
-                result["card_description"] = result["card_description"].replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+                # 使用html.unescape解码HTML实体，替代原来的手动替换方式
+                result["card_description"] = html.unescape(result["card_description"])
             
             # 提取链接
             url_match = re.search(r'<url>(.*?)</url>', content, re.DOTALL)
             if url_match:
                 result["card_url"] = url_match.group(1).strip()
+                # 使用html.unescape解码URL中的HTML实体
+                result["card_url"] = html.unescape(result["card_url"])
             
             # 提取应用名称 - 两种可能的路径
             appname_match = re.search(r'<appinfo>.*?<appname>(.*?)</appname>', content, re.DOTALL)
             if appname_match:
                 result["card_appname"] = appname_match.group(1).strip()
+                # 使用html.unescape解码应用名称中的HTML实体
+                result["card_appname"] = html.unescape(result["card_appname"])
             else:
                 # 尝试从sourcedisplayname获取
                 source_match = re.search(r'<sourcedisplayname>(.*?)</sourcedisplayname>', content, re.DOTALL)
                 if source_match:
                     result["card_sourcedisplayname"] = source_match.group(1).strip()
+                    # 使用html.unescape解码来源名称中的HTML实体
+                    result["card_sourcedisplayname"] = html.unescape(result["card_sourcedisplayname"])
                     if not result["card_appname"]:
                         result["card_appname"] = result["card_sourcedisplayname"]
             
