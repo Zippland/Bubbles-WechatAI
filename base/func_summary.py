@@ -453,41 +453,8 @@ class MessageSummary:
             sender_data = all_contacts.get(msg.sender)
             sender_name = sender_data if sender_data else msg.sender  # 最后使用wxid
 
-        # 7. 在终端输出处理结果 (如果需要调试)
-        # 检查原始消息是否包含XML特征，以便决定是否打印详细信息
-        current_time_str = time.strftime("%H:%M", time.localtime())  # 获取当前时间
-        is_potentially_xml = "<" in original_content and ">" in original_content
-        if is_potentially_xml:
-            print("\n==================== XML 消息处理 ====================")
-            print(f"发送者: {sender_name} ({msg.sender})")
-            print(f"群ID: {chat_id}")
-            print(f"消息ID: {msg.id}")
-            print(f"消息类型: {msg.type}")
-            print(f"媒体类型: {extracted_data.get('media_type', 'N/A')}")
-            print(f"是否引用: {extracted_data.get('has_quote', False)}")
-            print(f"是否卡片: {extracted_data.get('is_card', False)}")
-            
-            if extracted_data.get('has_quote', False):
-                print(f"  被引用者: {extracted_data.get('quoted_sender', 'N/A')}")
-                q_content = extracted_data.get('quoted_content', '')
-                print(f"  被引用内容: {q_content[:50]}{'...' if len(q_content) > 50 else ''}")
-                if extracted_data.get('quoted_is_card', False):
-                    print(f"  被引用卡片类型: {extracted_data.get('quoted_card_type', 'N/A')}")
-                    print(f"  被引用卡片标题: {extracted_data.get('quoted_card_title', 'N/A')}")
-            
-            if extracted_data.get('is_card', False):
-                print(f"  卡片类型: {extracted_data.get('card_type', 'N/A')}")
-                print(f"  卡片标题: {extracted_data.get('card_title', 'N/A')}")
-                c_desc = extracted_data.get('card_description', '')
-                print(f"  卡片描述: {c_desc[:50]}{'...' if len(c_desc) > 50 else ''}")
-                print(f"  卡片来源: {extracted_data.get('card_appname') or extracted_data.get('card_sourcedisplayname', 'N/A')}")
-            
-            print(f"提取来源: {source_info}")
-            print(f"最终记录内容: \"{content_to_record}\"")
-            print(f"标准格式记录: [{current_time_str}]{sender_name}: {content_to_record}")
-            print("======================================================\n")
-        elif content_to_record:  # 对于普通文本消息，使用标准格式输出
-            print(f"\n[{current_time_str}]{sender_name}: {content_to_record}\n")
+        # 获取当前时间(只用于记录，不再打印)
+        current_time_str = time.strftime("%H:%M", time.localtime())
 
         # 8. 记录提取到的有效内容
         self.LOG.debug(f"记录消息 (来源: {source_info}): '[{current_time_str}]{sender_name}: {content_to_record}' (来自 msg.id={msg.id})")
