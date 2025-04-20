@@ -389,6 +389,9 @@ class HarryPotterDuel:
     
     def start_duel(self):
         """开始决斗，返回决斗过程的步骤列表"""
+        # 创建积分系统实例，整个方法中重用
+        rank_system = DuelRankSystem(self.group_id)
+        
         # Boss战特殊处理
         if self.is_boss_fight:
             # 生成随机的Boss战斗过程
@@ -420,8 +423,8 @@ class HarryPotterDuel:
                 ]
                 self.steps.append(random.choice(victory_turn))
                 
-                # 获取积分系统实例
-                rank_system = DuelRankSystem(self.group_id)
+                # 获取积分系统实例 - 已经在方法开始处创建，这里删除
+                # rank_system = DuelRankSystem(self.group_id)
                 
                 # 随机获得一件装备
                 items = ["elder_wand", "magic_stone", "invisibility_cloak"]
@@ -483,8 +486,8 @@ class HarryPotterDuel:
                 ]
                 self.steps.append(random.choice(defeat_end))
                 
-                # 获取积分系统实例
-                rank_system = DuelRankSystem(self.group_id)
+                # 获取积分系统实例 - 已经在方法开始处创建，这里删除
+                # rank_system = DuelRankSystem(self.group_id)
                 
                 # 特殊的积分扣除
                 player_data = rank_system.get_player_data(loser["name"])
@@ -517,10 +520,50 @@ class HarryPotterDuel:
         # 普通决斗流程，保持原有逻辑
         # 根据决斗发起者设置先手概率
         if self.player1["is_challenger"]:
-            first_attack_prob = 0.6 if self.player1["is_challenger"] else 0.4
+            # 获取积分系统实例 - 已经在方法开始处创建，这里删除
+            # rank_system = DuelRankSystem(self.group_id)
+            
+            # 获取挑战者的排名和总玩家数
+            challenger = self.player1["name"]
+            challenger_rank, _ = rank_system.get_player_rank(challenger)
+            
+            # 获取总玩家数
+            all_players = rank_system.get_rank_list(9999)  # 获取所有玩家
+            total_players = len(all_players)
+            
+            # 计算先手概率：基础概率50% + (排名/总人数)*30%
+            # 如果没有排名或总玩家数为0，则使用基础概率50%
+            if challenger_rank is not None and total_players > 0:
+                # 排名越大（越靠后），先手优势越大
+                first_attack_prob = 0.5 + (challenger_rank / total_players) * 0.3
+                self.steps.append(f"📊 挑战者排名: 第{challenger_rank}/{total_players}名，先手概率: {int(first_attack_prob*100)}%")
+            else:
+                first_attack_prob = 0.5  # 默认概率
+                self.steps.append(f"📊 挑战者暂无排名，先手概率: 50%")
+                
             current_attacker = "player1" if random.random() < first_attack_prob else "player2"
         else:
-            first_attack_prob = 0.6 if self.player2["is_challenger"] else 0.4
+            # 获取积分系统实例 - 已经在方法开始处创建，这里删除
+            # rank_system = DuelRankSystem(self.group_id)
+            
+            # 获取挑战者的排名和总玩家数
+            challenger = self.player2["name"]
+            challenger_rank, _ = rank_system.get_player_rank(challenger)
+            
+            # 获取总玩家数
+            all_players = rank_system.get_rank_list(9999)  # 获取所有玩家
+            total_players = len(all_players)
+            
+            # 计算先手概率：基础概率50% + (排名/总人数)*30%
+            # 如果没有排名或总玩家数为0，则使用基础概率50%
+            if challenger_rank is not None and total_players > 0:
+                # 排名越大（越靠后），先手优势越大
+                first_attack_prob = 0.5 + (challenger_rank / total_players) * 0.3
+                self.steps.append(f"📊 挑战者排名: 第{challenger_rank}/{total_players}名，先手概率: {int(first_attack_prob*100)}%")
+            else:
+                first_attack_prob = 0.5  # 默认概率
+                self.steps.append(f"📊 挑战者暂无排名，先手概率: 50%")
+                
             current_attacker = "player2" if random.random() < first_attack_prob else "player1"
         
         # 随机选择先手介绍语
@@ -547,8 +590,8 @@ class HarryPotterDuel:
             attacker = self.player2
             defender = self.player1
         
-        # 获取积分系统实例
-        rank_system = DuelRankSystem(self.group_id)
+        # 获取积分系统实例 - 已经在方法开始处创建，这里删除
+        # rank_system = DuelRankSystem(self.group_id)
         
         # 检查player1是否有隐身衣 - 直接获胜
         player1_data = rank_system.get_player_data(self.player1["name"])
