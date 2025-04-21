@@ -61,21 +61,36 @@ def handle_duel(ctx: 'MessageContext', match: Optional[Match]) -> bool:
         return False
     
     # 获取对手名称
-    opponent_name = match.group(1).strip()
+    opponent_name_input = match.group(1).strip()
     
     if ctx.logger:
-        ctx.logger.info(f"决斗指令匹配: 对手={opponent_name}, 发起者={ctx.sender_name}")
+        ctx.logger.info(f"决斗指令匹配: 对手={opponent_name_input}, 发起者={ctx.sender_name}")
     
-    # 寻找群内对应的成员
+    # 寻找群内对应的成员 (优先完全匹配，其次部分匹配)
     opponent_wxid = None
+    opponent_name = None
+    
+    # 第一次遍历：寻找完全匹配
     for member_wxid, member_name in ctx.room_members.items():
-        if opponent_name in member_name:
+        if opponent_name_input == member_name:
             opponent_wxid = member_wxid
-            opponent_name = member_name  # 使用完整的群昵称
+            opponent_name = member_name
+            if ctx.logger:
+                ctx.logger.info(f"找到完全匹配对手: {opponent_name}")
             break
     
+    # 如果没有找到完全匹配，再寻找部分匹配
     if not opponent_wxid:
-        ctx.send_text(f"❌ 没有找到名为 {opponent_name} 的群成员")
+        for member_wxid, member_name in ctx.room_members.items():
+            if opponent_name_input in member_name:
+                opponent_wxid = member_wxid
+                opponent_name = member_name
+                if ctx.logger:
+                    ctx.logger.info(f"未找到完全匹配，使用部分匹配对手: {opponent_name}")
+                break
+    
+    if not opponent_wxid:
+        ctx.send_text(f"❌ 没有找到名为 {opponent_name_input} 的群成员")
         return True
     
     # 获取挑战者昵称
