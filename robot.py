@@ -337,7 +337,7 @@ class Robot(Job):
         if nickName:
             # 添加了好友，更新好友列表
             self.allContacts[msg.sender] = nickName[0]
-            self.sendTextMsg(f"Hi {nickName[0]}，我自动通过了你的好友请求。", msg.sender)
+            self.sendTextMsg(f"Hi {nickName[0]}，我是泡泡，我自动通过了你的好友请求。", msg.sender)
 
     def newsReport(self) -> None:
         receivers = self.config.NEWS

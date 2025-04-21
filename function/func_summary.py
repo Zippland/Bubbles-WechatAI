@@ -14,7 +14,7 @@ class MessageSummary:
     用于记录、管理和生成聊天历史消息的总结
     """
     
-    def __init__(self, max_history=200, db_path="data/message_history.db"):
+    def __init__(self, max_history=300, db_path="data/message_history.db"):
         """初始化消息总结功能
         
         Args:

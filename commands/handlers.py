@@ -39,11 +39,8 @@ def handle_help(ctx: 'MessageContext', match: Optional[Match]) -> bool:
         "- reset/重置",
         "",
         "【Perplexity AI】",
-        "- ask [问题]：使用Perplexity进行深度查询",
-        "",
-        "【其他】",
-        "- info/帮助/指令",
-        "- 直接@泡泡：进行对话"
+        "- ask [问题]：使用专业模式解答问题",
+        ""
     ]
     help_text = "\n".join(help_text)
     
