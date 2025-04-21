@@ -299,7 +299,7 @@ class Robot(Job):
             self.LOG.info(f"To {receiver}: {msg}")
             self.wcf.send_text(f"{msg}", receiver, at_list)
         else:
-            self.LOG.info(f"To {receiver}: {ats}\r{msg}")
+            self.LOG.info(f"To {receiver}:\n{ats}\n{msg}")
             self.wcf.send_text(f"{ats}\n\n{msg}", receiver, at_list)
 
     def getAllContacts(self) -> dict:
