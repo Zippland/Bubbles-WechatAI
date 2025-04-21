@@ -4,7 +4,8 @@ from .handlers import (
     handle_help, handle_duel, handle_sneak_attack, handle_duel_rank,
     handle_duel_stats, handle_check_equipment, handle_reset_memory,
     handle_summary, handle_clear_messages, handle_news_request,
-    handle_rename, handle_chengyu, handle_chitchat, handle_insult
+    handle_rename, handle_chengyu, handle_chitchat, handle_insult,
+    handle_perplexity_ask
 )
 
 # 命令列表，按优先级排序
@@ -42,6 +43,17 @@ COMMANDS = [
         description="重置与机器人的对话历史"
     ),
     
+    # ======== Perplexity AI 命令 ========
+    Command(
+        name="perplexity_ask",
+        pattern=re.compile(r"^ask\s*(.+)", re.IGNORECASE | re.DOTALL),
+        scope="both",       # 群聊和私聊都支持
+        need_at=True,      # 需要@机器人
+        priority=25,        # 较高优先级，确保在闲聊之前处理
+        handler=handle_perplexity_ask,
+        description="使用 Perplexity AI 进行深度查询"
+    ),
+    
     # ======== 消息管理命令 ========
     Command(
         name="summary",
@@ -68,7 +80,7 @@ COMMANDS = [
         name="news",
         pattern=re.compile(r"^新闻$"),
         scope="both",       # 群聊和私聊都支持
-        need_at=True,      # 群聊中需要@
+        need_at=True,      # 需要@机器人
         priority=40,        # 优先级一般
         handler=handle_news_request,
         description="获取最新新闻"
@@ -79,7 +91,7 @@ COMMANDS = [
         name="duel",
         pattern=re.compile(r"决斗.*?(?:@|[与和])\s*([^\s@]+)"),
         scope="group",      # 仅群聊支持
-        need_at=False,      # 不需要@机器人 (命令中已包含)
+        need_at=False,      # 不需要@机器人
         priority=50,        # 优先级较低
         handler=handle_duel,
         description="发起决斗"

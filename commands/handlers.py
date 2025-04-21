@@ -18,7 +18,6 @@ def handle_help(ctx: 'MessageContext', match: Optional[Match]) -> bool:
     
     匹配: info/帮助/指令
     """
-    # 从Robot实例获取帮助信息，如果已经实现了get_bot_help_info方法
     help_text = [
         "🤖 泡泡的指令列表 🤖",
         "",
@@ -38,6 +37,9 @@ def handle_help(ctx: 'MessageContext', match: Optional[Match]) -> bool:
         "- summary/总结",
         "- clearmessages/清除历史",
         "- reset/重置",
+        "",
+        "【Perplexity AI】",
+        "- ask [问题]：使用Perplexity进行深度查询",
         "",
         "【其他】",
         "- info/帮助/指令",
@@ -663,4 +665,53 @@ def handle_insult(ctx: 'MessageContext', match: Optional[Match]) -> bool:
         if ctx.logger:
             ctx.logger.error(f"生成或发送骂人消息时出错: {e}")
         ctx.send_text("呃，我想骂但出错了...")
-        return True 
+        return True
+
+def handle_perplexity_ask(ctx: 'MessageContext', match: Optional[Match]) -> bool:
+    """
+    处理 "ask" 命令，调用 Perplexity AI
+
+    匹配: ask [问题内容]
+    """
+    if not match:  # 理论上正则匹配成功才会被调用，但加个检查更安全
+        return False
+
+    # 1. 尝试从 Robot 实例获取 Perplexity 实例
+    perplexity_instance = getattr(ctx.robot, 'perplexity', None)
+    
+    # 2. 检查 Perplexity 实例是否存在
+    if not perplexity_instance:
+        if ctx.logger:
+            ctx.logger.warning("尝试调用 Perplexity，但实例未初始化或未配置。")
+        ctx.send_text("❌ Perplexity 功能当前不可用或未正确配置。")
+        return True  # 命令已被处理（错误处理也是处理）
+
+    # 3. 从匹配结果中提取问题内容
+    prompt = match.group(1).strip()
+    if not prompt:  # 如果 'ask' 后面没有内容
+        ctx.send_text("请在 'ask' 后面加上您想问的问题。", ctx.msg.sender if ctx.is_group else None)
+        return True  # 命令已被处理
+
+    # 4. 准备调用 Perplexity 实例的 process_message 方法
+    if ctx.logger:
+        ctx.logger.info(f"检测到 Perplexity 请求，发送者: {ctx.sender_name}, 问题: {prompt[:50]}...")
+
+    # 准备参数并调用 process_message
+    # 确保无论用户输入有没有空格，都以标准格式"ask 问题"传给process_message
+    content_for_perplexity = f"ask {prompt}"  # 重构包含触发词的内容
+    chat_id = ctx.get_receiver()
+    sender_wxid = ctx.msg.sender
+    room_id = ctx.msg.roomid if ctx.is_group else None
+    is_group = ctx.is_group
+    
+    # 5. 调用 process_message 并返回其结果
+    was_handled = perplexity_instance.process_message(
+        content=content_for_perplexity,
+        chat_id=chat_id,
+        sender=sender_wxid,
+        roomid=room_id,
+        from_group=is_group,
+        send_text_func=ctx.send_text
+    )
+    
+    return was_handled 
