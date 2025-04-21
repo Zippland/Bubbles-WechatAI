@@ -2,6 +2,7 @@ import logging
 import re
 import html
 import time
+import xml.etree.ElementTree as ET
 from wcferry import WxMsg
 
 class XmlProcessor:
@@ -571,21 +572,13 @@ class XmlProcessor:
             return ""
     
     def extract_card_details(self, content: str) -> dict:
-        """从消息内容中提取卡片详情
-        
+        """从消息内容中提取卡片详情 (使用 ElementTree 解析)
+
         Args:
-            content: 消息内容
-            
+            content: 消息内容 (XML 字符串)
+
         Returns:
-            dict: {
-                "is_card": bool,      # 是否为卡片消息
-                "card_type": str,     # 卡片类型
-                "card_title": str,    # 卡片标题
-                "card_description": str, # 卡片描述
-                "card_url": str,      # 卡片链接
-                "card_appname": str,  # 卡片来源应用
-                "card_sourcedisplayname": str, # 来源显示名称
-            }
+            dict: 包含卡片详情的字典
         """
         result = {
             "is_card": False,
@@ -596,69 +589,138 @@ class XmlProcessor:
             "card_appname": "",
             "card_sourcedisplayname": ""
         }
-        
+
         try:
-            # 检查是否包含appmsg标签
-            if "<appmsg" not in content:
-                return result
-                
-            # 设置为卡片消息
-            result["is_card"] = True
-            
-            # 提取卡片类型
-            type_match = re.search(r'<appmsg.*?type="(\d+)"', content, re.DOTALL)
-            if type_match:
-                card_type_num = type_match.group(1)
-                result["card_type"] = self.get_card_type_name(card_type_num)
-            
-            # 提取标题
-            title_match = re.search(r'<appmsg.*?<title>(.*?)</title>', content, re.DOTALL)
-            if title_match:
-                result["card_title"] = title_match.group(1).strip()
-                # 使用html.unescape解码标题中的HTML实体
-                result["card_title"] = html.unescape(result["card_title"])
-            
-            # 提取描述
-            des_match = re.search(r'<des>(.*?)</des>', content, re.DOTALL)
-            if des_match:
-                result["card_description"] = des_match.group(1).strip()
-                # 清理HTML标签
-                result["card_description"] = re.sub(r'<.*?>', '', result["card_description"])
-                # 使用html.unescape解码HTML实体，替代原来的手动替换方式
-                result["card_description"] = html.unescape(result["card_description"])
-            
-            # 提取链接
-            url_match = re.search(r'<url>(.*?)</url>', content, re.DOTALL)
-            if url_match:
-                result["card_url"] = url_match.group(1).strip()
-                # 使用html.unescape解码URL中的HTML实体
-                result["card_url"] = html.unescape(result["card_url"])
-            
-            # 提取应用名称 - 两种可能的路径
-            appname_match = re.search(r'<appinfo>.*?<appname>(.*?)</appname>', content, re.DOTALL)
-            if appname_match:
-                result["card_appname"] = appname_match.group(1).strip()
-                # 使用html.unescape解码应用名称中的HTML实体
-                result["card_appname"] = html.unescape(result["card_appname"])
+            # 1. 定位并提取 <appmsg> 标签内容
+            #    正则表达式用于精确找到 <appmsg>...</appmsg> 部分，避免解析整个消息体可能引入的错误
+            appmsg_match = re.search(r'<appmsg.*?>(.*?)</appmsg>', content, re.DOTALL | re.IGNORECASE)
+            if not appmsg_match:
+                # 有些简单的 appmsg 可能没有闭合标签，尝试匹配自闭合或非标准格式
+                appmsg_match_simple = re.search(r'(<appmsg[^>]*>)', content, re.IGNORECASE)
+                if not appmsg_match_simple:
+                     # 尝试查找 <msg> 下的 <appmsg> 作为根
+                     msg_match = re.search(r'<msg>(.*?)</msg>', content, re.DOTALL | re.IGNORECASE)
+                     if msg_match:
+                         inner_content = msg_match.group(1)
+                         try:
+                             # 尝试将<msg>内的内容解析为根，然后查找appmsg
+                             # 为了容错，添加一个虚拟根标签
+                             root = ET.fromstring(f"<root>{inner_content}</root>")
+                             appmsg_node = root.find('.//appmsg')
+                             if appmsg_node is None:
+                                 self.logger.debug("在 <msg> 内未找到 <appmsg> 标签")
+                                 return result # 未找到 appmsg，不是标准卡片
+                             # 将 Element 对象转回字符串以便后续统一处理（或直接使用 Element对象查找）
+                             # 为简化后续流程，我们还是转回字符串交给下面的ET.fromstring处理
+                             # 注意：这里需要重新构造 appmsg 标签本身，ET.tostring只包含内容
+                             appmsg_xml_str = ET.tostring(appmsg_node, encoding='unicode', method='xml')
+
+
+                         except ET.ParseError as parse_error:
+                             self.logger.debug(f"解析 <msg> 内容时出错: {parse_error}")
+                             return result # 解析失败
+
+                     else:
+                        self.logger.debug("未找到 <appmsg> 标签")
+                        return result # 未找到 appmsg，不是标准卡片
+                else:
+                    # 对于 <appmsg ... /> 这种简单情况，可能无法提取内部标签，但也标记为卡片
+                    appmsg_xml_str = appmsg_match_simple.group(1)
+                    result["is_card"] = True # 标记为卡片，即使可能无法提取详细信息
             else:
-                # 尝试从sourcedisplayname获取
-                source_match = re.search(r'<sourcedisplayname>(.*?)</sourcedisplayname>', content, re.DOTALL)
-                if source_match:
-                    result["card_sourcedisplayname"] = source_match.group(1).strip()
-                    # 使用html.unescape解码来源名称中的HTML实体
-                    result["card_sourcedisplayname"] = html.unescape(result["card_sourcedisplayname"])
-                    if not result["card_appname"]:
-                        result["card_appname"] = result["card_sourcedisplayname"]
-            
-            # 没有提取到特定的卡片信息，可能格式不标准
-            if not (result["card_title"] or result["card_description"] or result["card_url"]):
-                self.logger.warning(f"卡片信息提取失败，可能是非标准格式")
-                
-            return result
-                
+                # 需要重新包含 <appmsg ...> 标签本身来解析属性
+                appmsg_outer_match = re.search(r'(<appmsg[^>]*>).*?</appmsg>', content, re.DOTALL | re.IGNORECASE)
+                if not appmsg_outer_match:
+                     # 如果上面的正则失败，尝试简单匹配开始标签
+                     appmsg_outer_match = re.search(r'(<appmsg[^>]*>)', content, re.IGNORECASE)
+
+                if appmsg_outer_match:
+                    appmsg_tag_start = appmsg_outer_match.group(1)
+                    appmsg_inner_content = appmsg_match.group(1)
+                    appmsg_xml_str = f"{appmsg_tag_start}{appmsg_inner_content}</appmsg>"
+                else:
+                     self.logger.warning("无法提取完整的 <appmsg> 标签结构")
+                     return result # 结构不完整
+
+            # 2. 使用 ElementTree 解析 <appmsg> 内容
+            try:
+                # 尝试解析提取出的 <appmsg> XML 字符串
+                # 使用 XML 而不是 fromstring，因为它对根元素要求更宽松
+                appmsg_root = ET.XML(appmsg_xml_str)
+                result["is_card"] = True # 解析成功，确认是卡片
+
+                # 3. 提取卡片类型 (来自 <appmsg> 标签的 type 属性)
+                card_type_num = appmsg_root.get('type', '') # 安全获取属性
+                if card_type_num:
+                    result["card_type"] = self.get_card_type_name(card_type_num)
+                else:
+                     # 尝试从内部 <type> 标签获取 (兼容旧格式或特殊格式)
+                     type_node = appmsg_root.find('./type')
+                     if type_node is not None and type_node.text:
+                         result["card_type"] = self.get_card_type_name(type_node.text.strip())
+
+
+                # 4. 提取标题 (<title>)
+                title = appmsg_root.findtext('./title', default='').strip()
+                if title:
+                    result["card_title"] = html.unescape(title)
+
+                # 5. 提取描述 (<des>)
+                description = appmsg_root.findtext('./des', default='').strip()
+                if description:
+                    cleaned_desc = re.sub(r'<.*?>', '', description) # 清理HTML标签
+                    result["card_description"] = html.unescape(cleaned_desc)
+
+                # 6. 提取链接 (<url>)
+                url = appmsg_root.findtext('./url', default='').strip()
+                if url:
+                    result["card_url"] = html.unescape(url)
+
+                # 7. 提取应用名称 (<appinfo/appname> 或 <sourcedisplayname>)
+                # 优先尝试 <appinfo><appname>
+                appname_node = appmsg_root.find('./appinfo/appname')
+                if appname_node is not None and appname_node.text:
+                    appname = appname_node.text.strip()
+                    result["card_appname"] = html.unescape(appname)
+                # 如果没找到，或者为空，尝试 <sourcedisplayname>
+                sourcedisplayname_node = appmsg_root.find('./sourcedisplayname')
+                if sourcedisplayname_node is not None and sourcedisplayname_node.text:
+                     sourcedisplayname = sourcedisplayname_node.text.strip()
+                     result["card_sourcedisplayname"] = html.unescape(sourcedisplayname)
+                     # 如果 appname 为空，使用 sourcedisplayname 作为 appname
+                     if not result["card_appname"]:
+                         result["card_appname"] = result["card_sourcedisplayname"]
+                # 兼容直接在 appmsg 下的 appname
+                if not result["card_appname"]:
+                    appname_direct = appmsg_root.findtext('./appname', default='').strip()
+                    if appname_direct:
+                         result["card_appname"] = html.unescape(appname_direct)
+
+                # 记录提取结果用于调试
+                self.logger.debug(f"ElementTree 解析结果: type={result['card_type']}, title={result['card_title']}, desc_len={len(result['card_description'])}, url_len={len(result['card_url'])}, app={result['card_appname']}, source={result['card_sourcedisplayname']}")
+
+            except ET.ParseError as e:
+                self.logger.error(f"使用 ElementTree 解析 <appmsg> 时出错: {e}\nXML 内容片段: {appmsg_xml_str[:500]}...", exc_info=True)
+                # 即使解析<appmsg>出错，如果正则找到了<appmsg>，仍然标记为卡片
+                if result["is_card"] == False and ('<appmsg' in content or '<msg>' in content):
+                     result["is_card"] = True # 基本判断是卡片，但细节提取失败
+                     # 尝试用正则提取基础信息作为后备
+                     type_match_fallback = re.search(r'<type>(\d+)</type>', content)
+                     title_match_fallback = re.search(r'<title>(.*?)</title>', content, re.DOTALL)
+                     if type_match_fallback:
+                         result["card_type"] = self.get_card_type_name(type_match_fallback.group(1))
+                     if title_match_fallback:
+                         result["card_title"] = html.unescape(title_match_fallback.group(1).strip())
+                     self.logger.warning("ElementTree 解析失败，已尝试正则后备提取基础信息")
+
+
         except Exception as e:
-            self.logger.error(f"提取卡片详情时出错: {e}")
-            return result
+            self.logger.error(f"提取卡片详情时发生意外错误: {e}", exc_info=True)
+            # 尽量判断是否是卡片
+            if not result["is_card"] and ('<appmsg' in content or '<msg>' in content):
+                result["is_card"] = True
+
+        return result
     
     def get_card_type_name(self, type_num: str) -> str:
         """根据卡片类型编号获取类型名称

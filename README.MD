@@ -1,200 +1,266 @@
-# Bubbles - 多功能微信聊天助手
+# Bubbles-WechatAI
 
-一个功能强大、高度可定制的微信机器人，基于 [WeChatFerry](https://github.com/lich0821/WeChatFerry) 开发，支持多种AI大模型、文生图、游戏互动等功能。
+![版本](https://img.shields.io/badge/版本-39.2.4.0-blue)
+![Python](https://img.shields.io/badge/Python-3.8+-green)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
-<p align="center">
-  <img src="https://github.com/Zippland/Bubbles-WechatAI/assets/yourID/raw/main/assets/logo.png" alt="Bubbles Logo" width="200">
-</p>
+## 📝 项目简介
 
-## ✨ 主要功能
+Bubbles-WechatAI 是一个功能丰富的微信机器人框架，基于 [wcferry](https://github.com/lich0821/wcferry) 开发，支持接入多种大型语言模型（LLM），提供丰富的交互功能和定时任务。该项目旨在将微信客户端转变为一个智能的个人助手，可以执行多种实用功能，带来便捷的用户体验。
 
-### 🤖 多模型AI聊天
-- 支持多种大语言模型：
-  - ChatGPT
+## ✨ 核心特性
+
+### 🤖 多 AI 模型支持
+- 支持多种主流 AI 大模型：
+  - OpenAI (ChatGPT)
   - Google Gemini
-  - 智谱AI
-  - 讯飞星火
+  - 智谱 AI (ChatGLM)
+  - 科大讯飞星火大模型
+  - 阿里云通义千问
   - TigerBot
-  - ChatGLM
-  - Ollama（本地模型）
   - DeepSeek
   - Perplexity
+  - Ollama (本地部署的模型)
 
-### 🎨 文生图功能
-- 支持多个文生图服务：
-  - 智谱CogView
-  - 阿里云文生图
-  - Google Gemini文生图
+### 🔄 灵活的模型配置
+- 支持为不同的群聊和私聊设置不同的 AI 模型
+- 可以通过命令行参数或配置文件设置默认模型
 
-### 🎮 互动游戏
-- 成语接龙：根据尾字自动接龙
-- 模拟决斗：支持玩家间进行虚拟对战，记录排名
+### 🎮 丰富的命令系统
+- 强大的命令路由系统，支持自定义命令及参数
+- 预设多种实用和娱乐命令
+
+### 🎨 AI 图像生成
+- 支持调用多种 AI 绘图模型生成图片
 
 ### ⏰ 定时任务
-- 每日天气预报
-- 每日新闻推送
-- 工作日报/周报提醒
+- 每日天气预报推送
+- 每日新闻资讯推送
+- 工作日报/周报/月报提醒
 
-### 🔄 消息管理
-- 群聊消息总结
-- 对话记忆和重置
-- 动态切换AI模型
+### 🎲 娱乐功能
+- 决斗游戏系统（含排行榜、玩家统计、偷袭等）
+- 成语接龙
+- 古灵阁妖精馈赠（随机事件系统）
 
-## 🚀 快速开始
+### 📊 对话管理
+- 智能消息总结功能
+- 处理各类微信消息（文本、图片、小程序、链接等）
 
-### 环境要求
-- Python 3.9+ (推荐3.10，不建议使用Python 3.12)
-- 支持的微信版本：请参考[WeChatFerry发布页](https://github.com/lich0821/WeChatFerry/releases/latest)获取兼容版本
+### 🔧 实用工具
+- 自动接受好友请求并打招呼
+- 自动响应群聊和私聊消息
+
+## 🛠️ 安装指南
+
+### 系统要求
+- Python 3.8 或更高版本
+- Windows 操作系统（wcferry 要求）
+- 微信 PC 版客户端
 
 ### 安装步骤
 
-1. 克隆仓库
-```bash
-git clone https://github.com/Zippland/Bubbles-WechatAI.git
-cd Bubbles-WechatAI
+1. **克隆仓库**
+   ```bash
+   git clone https://github.com/yourusername/Bubbles-WechatAI.git
+   cd Bubbles-WechatAI
+   ```
+
+2. **创建并激活虚拟环境（可选但推荐）**
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate
+   ```
+
+3. **安装依赖**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **安装 wcferry 服务**
+
+   请参考 [wcferry 官方文档](https://github.com/lich0821/wcferry) 安装并启动 wcferry 服务。
+
+5. **配置项目**
+   ```bash
+   # 复制配置模板
+   cp config.yaml.template config.yaml
+   
+   # 编辑配置文件，填入您的 API 密钥等信息
+   notepad config.yaml
+   ```
+
+## ⚙️ 配置说明
+
+配置文件 `config.yaml` 包含以下主要部分：
+
+### AI 模型配置
+
+每个 AI 模型都有自己的配置部分，例如：
+
+```yaml
+# ChatGPT 配置
+CHATGPT:
+  key: "your-openai-api-key"
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"  # 可选：gpt-4, gpt-3.5-turbo 等
+  temperature: 0.7
+  max_tokens: 2000
+  system_prompt: "你是一个有用的助手。"
+  proxy: "http://127.0.0.1:7890"  # 可选：如需代理请填写
 ```
 
-2. 安装依赖
-```bash
-# 升级pip
-python -m pip install -U pip
+### 群组/私聊模型映射
 
-# 安装依赖包
-pip install -r requirements.txt
+您可以为不同的群聊或私聊指定不同的 AI 模型：
 
-# 如果网络不稳定，可使用国内镜像
-pip install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com -r requirements.txt
-
-# 使用ChatGLM需安装kernel
-ipython kernel install --name chatglm3 --user
+```yaml
+# 群组模型配置
+GROUP_MODELS:
+  # 默认模型 ID
+  default: 1  # 1 代表 CHATGPT
+  
+  # 群聊模型映射
+  mapping:
+    - room_id: "12345678@chatroom"  # 群聊 ID
+      model: 2  # 2 代表 Gemini
+  
+  # 私聊模型映射
+  private_mapping:
+    - wxid: "wxid_abc123"  # 用户 wxid
+      model: 3  # 3 代表 ChatGLM
 ```
 
-3. 首次运行生成配置文件
+### 功能开关
+
+您可以启用或禁用各种功能：
+
+```yaml
+# 功能开关
+FEATURES:
+  news_report: true
+  weather_report: true
+  auto_accept_friend: true
+  duel_game: true
+  image_generation: true
+```
+
+## 🚀 使用方法
+
+### 启动机器人
+
 ```bash
+# 使用默认配置启动
 python main.py
-# 此时会在项目目录下生成config.yaml配置文件
+
+# 指定默认 AI 模型 ID 启动
+python main.py -c 1  # 使用 ID 为 1 的模型（如 ChatGPT）
 ```
 
-4. 修改配置文件
-打开`config.yaml`，配置以下关键项：
-- 允许响应的群聊ID
-- AI模型API密钥和设置
-- 文生图服务配置
-- 定时任务接收者
+### 可用命令
 
-5. 正式运行
-```bash
-# 使用默认配置运行
-python main.py
+机器人支持多种命令，以下是一些常用命令示例：
 
-# 指定使用特定AI模型运行
-python main.py -c 模型编号
-```
+#### 基础命令
+- `/help` - 显示帮助信息
+- `/model` - 查看当前使用的 AI 模型
+- `/switch <模型ID>` - 切换当前会话的 AI 模型
 
-模型编号对应关系：
-- 1: TigerBot
-- 2: ChatGPT
-- 3: 讯飞星火
-- 4: ChatGLM
-- 5: Google Gemini
-- 6: 智谱AI
-- 7: Ollama
-- 8: DeepSeek
-- 9: Perplexity
+#### AI 对话
+- `/ai <问题>` - 向 AI 提问
+- `/clear` - 清除当前对话历史
+- `/summary` - 获取对话总结
 
-## 📝 配置说明
+#### 图片生成
+- `/draw <提示词>` - 生成 AI 图片
 
-### 群聊配置
-```yaml
-groups:
-  enable: [] # 允许响应的群聊ID，例如：2xxxxxxxxx3@chatroom,1xxxxxxxxx4@chatroom
-```
+#### 实用工具
+- `/weather <城市>` - 查询指定城市天气
+- `/news` - 获取今日新闻
 
-### AI模型配置示例
-```yaml
-chatgpt:
-  key: sk-xxxxxxxxxxxx  # OpenAI API密钥
-  api: https://api.openai.com/v1
-  proxy: http://127.0.0.1:7890  # 可选，代理设置
-  prompt: 你是智能聊天机器人，你叫Bubbles  # 角色设定
+#### 娱乐功能
+- `/duel <@用户>` - 邀请用户进行决斗
+- `/rank` - 查看决斗排行榜
+- `/stats` - 查看个人决斗统计
+- `/chengyu <成语>` - 成语接龙
 
-bard:
-  api_key: xx-xxxxxxxxx  # Google API密钥
-  model_name: gemini-pro
-  proxy: http://127.0.0.1:7890
-  prompt: You are Bubbles, a helpful AI assistant
+## 🎮 游戏功能详解
 
-# 其他模型配置类似...
-```
+### 决斗系统
 
-### 文生图配置
-```yaml
-cogview:
-  enable: true  # 是否启用智谱文生图
-  key: xxxxxxxxx  # API密钥
-  fallback_to_chat: true  # 未启用时是否回退到聊天模型
+Bubbles-WechatAI 内置了一个有趣的决斗游戏系统，用户可以在群聊中挑战其他成员：
 
-aliyun_image:
-  enable: false
-  access_key_id: xxxx
-  access_key_secret: xxxx
-  model: wanx2.1-t2i  # 可选模型类型
-```
+- **开始决斗**：使用 `/duel @用户` 开始一场决斗
+- **查看排名**：使用 `/rank` 查看全服决斗排行榜
+- **个人统计**：使用 `/stats` 查看个人决斗数据
+- **更改名称**：使用 `/rename <新名称>` 更改自己在决斗系统中的显示名称
+- **偷袭**：有概率触发随机偷袭事件
 
-## 🎯 使用指南
+### 古灵阁妖精馈赠
 
-### 基础命令
-- `@机器人 help` - 显示帮助信息
-- `@机器人 [问题]` - 向AI提问
-- `@机器人 画图 [提示词]` - 生成图片
-- `@机器人 重置` - 清除对话历史
-
-### 互动游戏（仅限群聊）
-- `@机器人 决斗 @某人` - 发起决斗
-- `@机器人 排名` - 查看决斗排名
-- `@机器人 战绩` - 查看个人战绩
-- `@机器人 改名 [新名字]` - 修改决斗昵称
-
-### 高级功能
-- `@机器人 总结` - 总结群聊最近消息
-- `@机器人 ask` - 创建新的Perplexity提问
+这是一个随机事件系统，机器人会在聊天中随机触发"古灵阁妖精馈赠"事件，为用户提供惊喜奖励。
 
 ## 📋 项目结构
 
 ```
 Bubbles-WechatAI/
-├── base/               # 基础功能模块
-│   ├── func_bard.py    # Google Bard/Gemini API
-│   ├── func_chatgpt.py # ChatGPT API
-│   ├── func_chatglm.py # ChatGLM API
+├── ai_providers/       # AI 模型接口实现
+├── commands/           # 命令系统实现
+├── data/               # 数据文件
+├── function/           # 功能模块
+│   ├── func_chengyu.py     # 成语功能
+│   ├── func_duel.py        # 决斗功能
+│   ├── func_news.py        # 新闻功能
+│   ├── func_weather.py     # 天气功能
 │   └── ...
-├── image/              # 文生图相关模块
-│   ├── cogview.py      # 智谱CogView实现
-│   ├── aliyun_image.py # 阿里云文生图实现
-│   └── gemini_image.py # Gemini文生图实现
-├── config/             # 配置文件目录
+├── image/              # 图像生成相关
+├── logs/               # 日志目录
+├── config.yaml         # 配置文件
+├── config.yaml.template # 配置模板
 ├── constants.py        # 常量定义
-├── configuration.py    # 配置加载
-├── main.py             # 主入口文件
-├── robot.py            # 机器人核心逻辑
-└── requirements.txt    # 依赖包列表
+├── main.py             # 入口文件
+├── robot.py            # 机器人核心实现
+└── requirements.txt    # 项目依赖
 ```
 
 ## 🤝 贡献指南
 
-欢迎提交Pull Request或Issue来帮助改进项目！
+欢迎对本项目做出贡献！您可以通过以下方式参与：
 
-## 📜 许可证
+1. **报告问题**：提交 issue 报告 bug 或提出功能建议
+2. **提交代码**：通过 Pull Request 提交您的改进
+3. **完善文档**：帮助改进项目文档
 
-[MIT License](LICENSE)
+## 📄 许可证
 
-## 🙏 鸣谢
+本项目采用 MIT 许可证，详情请参阅 [LICENSE](LICENSE) 文件。
 
-- [WeChatFerry](https://github.com/lich0821/WeChatFerry) - 提供微信通信能力
-- [ChatGPT](https://openai.com/) - AI对话能力
-- [Google Gemini](https://deepmind.google/technologies/gemini/) - AI对话和图像生成
-- 以及所有其他依赖的开源项目
+## 🙏 致谢
+
+- [wcferry](https://github.com/lich0821/wcferry) - 提供微信机器人底层支持
+- 所有贡献者和用户
+
+## ❓ 常见问题
+
+**Q: 如何获取群聊 ID？**
+A: 在群聊中发送一条消息，机器人日志会显示该消息的来源群聊 ID。
+
+**Q: 如何添加新的 AI 模型？**
+A: 在 `ai_providers` 目录下创建新的模型接口实现，然后在 `robot.py` 中注册该模型。
+
+**Q: 出现 "AI 模型未响应" 错误怎么办？**
+A: 检查相应 AI 模型的 API 密钥配置和网络连接，确保 API 可访问。
+
+**Q: 机器人不回复消息怎么办？**
+A: 检查 wcferry 服务是否正常运行，查看日志文件了解详细错误信息。
+
+## 📞 联系方式
+
+如有任何问题或建议，请通过以下方式联系我们：
+
+- GitHub Issues: [提交问题](https://github.com/yourusername/Bubbles-WechatAI/issues)
+- Email: youremail@example.com
 
 ---
 
-> 本项目仅供学习和研究使用，请勿用于非法用途。作者不对使用本项目产生的任何后果负责。
+**注意**：本项目仅供学习和个人使用，请遵守微信使用条款，不要用于任何违反法律法规的活动。
