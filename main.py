@@ -4,7 +4,7 @@
 import signal
 from argparse import ArgumentParser
 
-from base.func_report_reminder import ReportReminder
+from function.func_report_reminder import ReportReminder
 from configuration import Config
 from constants import ChatType
 from robot import Robot, __version__

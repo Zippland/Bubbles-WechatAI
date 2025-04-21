@@ -7,7 +7,7 @@ from collections import deque
 # from threading import Lock  # 不再需要锁，使用SQLite的事务机制
 import sqlite3  # 添加sqlite3模块
 import os  # 用于处理文件路径
-from base.func_xml_process import XmlProcessor  # 导入XmlProcessor
+from function.func_xml_process import XmlProcessor  # 导入XmlProcessor
 
 class MessageSummary:
     """消息总结功能类 (使用SQLite持久化)
@@ -251,7 +251,7 @@ class MessageSummary:
         prompt = (
             "请仔细阅读并分析以下聊天记录，生成一简要的、结构清晰且抓住重点的摘要。\n\n"
             "摘要格式要求：\n"
-            "1. 使用数字编号列表 (例如 1., 2., 3.) 来组织内容，每个编号代表一个独立的主要讨论主题。\n"
+            "1. 使用数字编号列表 (例如 1., 2., 3.) 来组织内容，每个编号代表一个独立的主要讨论主题，不要超过3个主题。\n"
             "2. 在每个编号的主题下，必须清晰地包含以下三句话，且写成一段不带格式的文字，每个主题单独成段：\n"
             "    - 第一句写主题，简要说明这个讨论的核心议题。\n"
             "    - 第二句话写参与者和内容和互动，列出该题的关键讨论成员 (使用 [用户名] 格式) 和他们的发言内容，以及成员之间的互动 (如表达的 感受 (如羡慕、共鸣、惊讶)、反应 (如赞同、提问、讨论))。\n"

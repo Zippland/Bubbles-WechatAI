@@ -9,30 +9,30 @@ from threading import Thread
 import os
 import random
 import shutil
-from ai_providers.func_zhipu import ZhiPu
+from ai_providers.ai_zhipu import ZhiPu
 from image import CogView, AliyunImage, GeminiImage
-from image.image_manager import ImageGenerationManager
+from image.img_manager import ImageGenerationManager
 
 from wcferry import Wcf, WxMsg
 
-from ai_providers.func_bard import BardAssistant
-from ai_providers.func_chatglm import ChatGLM
-from ai_providers.func_ollama import Ollama
-from ai_providers.func_chatgpt import ChatGPT
-from ai_providers.func_deepseek import DeepSeek
-from ai_providers.func_perplexity import Perplexity
-from base.func_chengyu import cy
-from base.func_weather import Weather
-from base.func_news import News
-from ai_providers.func_tigerbot import TigerBot
-from ai_providers.func_xinghuo_web import XinghuoWeb
-from base.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name, DuelManager, attempt_sneak_attack
-from base.func_summary import MessageSummary  # 导入新的MessageSummary类
+from ai_providers.ai_bard import BardAssistant
+from ai_providers.ai_chatglm import ChatGLM
+from ai_providers.ai_ollama import Ollama
+from ai_providers.ai_chatgpt import ChatGPT
+from ai_providers.ai_deepseek import DeepSeek
+from ai_providers.ai_perplexity import Perplexity
+from function.func_chengyu import cy
+from function.func_weather import Weather
+from function.func_news import News
+from ai_providers.ai_tigerbot import TigerBot
+from ai_providers.ai_xinghuo_web import XinghuoWeb
+from function.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name, DuelManager, attempt_sneak_attack
+from function.func_summary import MessageSummary  # 导入新的MessageSummary类
 from configuration import Config
 from constants import ChatType
 from job_mgmt import Job
-from base.func_xml_process import XmlProcessor
-from base.func_goblin_gift import GoblinGiftManager
+from function.func_xml_process import XmlProcessor
+from function.func_goblin_gift import GoblinGiftManager
 
 __version__ = "39.2.4.0"
 
@@ -305,7 +305,7 @@ class Robot(Job):
             
             # 确保有新名字和旧名字
             if old_name and new_name:
-                from base.func_duel import change_player_name
+                from function.func_duel import change_player_name
                 result = change_player_name(old_name, new_name, msg.roomid)
                 self.sendTextMsg(result, msg.roomid, msg.sender)
                 self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
@@ -363,7 +363,7 @@ class Robot(Job):
         
         # 决斗排行榜查询
         if content == "决斗排行" or content == "决斗排名" or content == "排行榜":
-            from base.func_duel import get_rank_list
+            from function.func_duel import get_rank_list
             rank_list = get_rank_list(10, msg.roomid)  # 正确传递群组ID
             self.sendTextMsg(rank_list, msg.roomid)
             self._try_trigger_goblin_gift(msg)  # 添加：尝试触发馈赠
@@ -385,7 +385,7 @@ class Robot(Job):
         if content == "我的装备" or content == "查看装备":
             player_name = self.wcf.get_alias_in_chatroom(msg.sender, msg.roomid)
             
-            from base.func_duel import DuelRankSystem
+            from function.func_duel import DuelRankSystem
             rank_system = DuelRankSystem(msg.roomid)
             player_data = rank_system.get_player_data(player_name)
             
@@ -635,7 +635,6 @@ class Robot(Job):
                 if msg.content.strip() == "新闻":
                     if self.handleNewsRequest(msg):
                         return # 已处理，直接返回
-                # --- 添加结束 ---
 
                 # 改名命令处理
                 change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
@@ -643,12 +642,65 @@ class Robot(Job):
                     old_name = change_name_match.group(1)
                     new_name = change_name_match.group(2)
                     
-                    from base.func_duel import change_player_name
+                    from function.func_duel import change_player_name
                     result = change_player_name(old_name, new_name, msg.roomid)
                     self.sendTextMsg(result, msg.roomid)
                     return
 
                 if msg.is_at(self.wxid):  # 被@
+                    # --- 添加：处理骂人指令 ---
+                    insult_match = re.search(r"骂一下\s*@([^\s@]+)", msg.content)
+                    if insult_match:
+                        target_mention_name = insult_match.group(1).strip()
+                        self.LOG.info(f"群聊 {msg.roomid} 中检测到骂人指令，提及目标：{target_mention_name}")
+
+                        actual_target_name = target_mention_name # 默认使用提及的名称
+                        target_wxid = None
+                        
+                        # 尝试查找实际群成员昵称和wxid
+                        try:
+                            room_members = self.wcf.get_chatroom_members(msg.roomid)
+                            found = False
+                            for wxid, name in room_members.items():
+                                # 优先完全匹配，其次部分匹配（避免有人名字包含另一个人）
+                                if target_mention_name == name:
+                                    target_wxid = wxid
+                                    actual_target_name = name
+                                    found = True
+                                    break
+                            if not found: # 如果完全匹配不到，再尝试部分匹配
+                                for wxid, name in room_members.items():
+                                     if target_mention_name in name:
+                                         target_wxid = wxid
+                                         actual_target_name = name
+                                         # 注意：部分匹配可能不精确，但作为备选
+                                         break 
+                        except Exception as e:
+                            self.LOG.error(f"查找群成员信息时出错: {e}")
+                            # 出错时继续使用提及的名称
+
+                        # 禁止骂机器人自己
+                        if target_wxid and target_wxid == self.wxid:
+                            self.sendTextMsg("😅 不行，我不能骂我自己。", msg.roomid)
+                            return # 处理完毕
+
+                        # 即使找不到wxid (可能对方改名或退群，或wcf接口问题), 仍然尝试使用提及的名字骂
+                        try:
+                            from function.func_insult import generate_random_insult
+                            insult_text = generate_random_insult(actual_target_name)
+                            self.sendTextMsg(insult_text, msg.roomid)
+                            self.LOG.info(f"已发送骂人消息至群 {msg.roomid}，目标: {actual_target_name}")
+                            self._try_trigger_goblin_gift(msg)  # 尝试触发馈赠
+                        except ImportError:
+                             self.LOG.error("无法导入 func_insult 模块。")
+                             self.sendTextMsg("Oops，我的骂人模块好像坏了...", msg.roomid)
+                        except Exception as e:
+                             self.LOG.error(f"生成或发送骂人消息时出错: {e}")
+                             self.sendTextMsg("呃，我想骂但出错了...", msg.roomid)
+                        
+                        return # 处理完骂人指令，结束本次处理
+                    # --- 骂人指令处理结束 ---
+                    
                     # 私聊改名处理
                     change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
                     if change_name_match:
@@ -709,13 +761,19 @@ class Robot(Job):
                             return # 已处理，直接返回
                     # --- 添加结束 ---
                     
+                    # --- 添加：私聊中拦截骂人指令 ---
+                    if re.search(r"骂一下", msg.content):
+                        self.sendTextMsg("❌ 骂人功能只支持群聊哦~", msg.sender)
+                        return
+                    # --- 添加结束 ---
+                    
                     # 私聊改名处理
                     change_name_match = re.search(r"^改名\s+([^\s]+)\s+([^\s]+)$", msg.content)
                     if change_name_match:
                         old_name = change_name_match.group(1)
                         new_name = change_name_match.group(2)
                         
-                        from base.func_duel import change_player_name
+                        from function.func_duel import change_player_name
                         result = change_player_name(old_name, new_name)  # 私聊不传群ID
                         self.sendTextMsg(result, msg.sender)
                         return

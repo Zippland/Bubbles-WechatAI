@@ -1088,12 +1088,12 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
         if random.random() < success_prob:
             # --- 偷袭成功 ---
             score_difference = abs(attacker_data['score'] - target_data['score'])
-            points_stolen = max(10, int(score_difference * 0.1))  # 偷取分数差的10%，至少10分
+            points_stolen = max(random.randint(10, 50), int(score_difference * 0.1))  # 偷取(10-50)或分数差的10%，取最大值
 
             # 更新分数
             attacker_data['score'] += points_stolen
             target_data['score'] = max(1, target_data['score'] - points_stolen)  # 确保分数不低于1
-
+            
             # 保存数据
             rank_system._save_ranks()
 

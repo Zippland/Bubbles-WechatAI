@@ -1,7 +1,7 @@
 import random
 from typing import TYPE_CHECKING, Callable, Any
 from wcferry import WxMsg
-from base.func_duel import DuelRankSystem
+from function.func_duel import DuelRankSystem
 
 if TYPE_CHECKING:
     from logging import Logger
