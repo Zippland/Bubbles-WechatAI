@@ -3,92 +3,170 @@ import logging
 import time
 import json
 import os
+import sqlite3
 from typing import List, Dict, Tuple, Optional, Any
 from threading import Thread, Lock
 
+# 获取 Logger 实例
+logger_duel = logging.getLogger("DuelRankSystem")
+
 # 排位积分系统
 class DuelRankSystem:
-    def __init__(self, group_id=None, data_file="duel_ranks.json"):
+    # 使用线程锁确保数据库操作的线程安全
+    _db_lock = Lock()
+    
+    def __init__(self, group_id=None, db_path="data/message_history.db"):
         """
         初始化排位系统
         
         Args:
             group_id: 群组ID
-            data_file: 数据文件路径
+            db_path: 数据库文件路径
         """
         # 确保group_id不为空，现在只支持群聊
         if not group_id:
             raise ValueError("决斗功能只支持群聊")
             
         self.group_id = group_id
-        self.data_file = data_file
-        self.ranks = self._load_ranks()
-        
-        # 确保当前群组存在于数据中
-        if self.group_id not in self.ranks["groups"]:
-            self.ranks["groups"][self.group_id] = {
-                "players": {},
-                "history": []
-            }
+        self.db_path = db_path
+        self._init_db()  # 初始化数据库
     
-    def _load_ranks(self) -> Dict:
-        """加载排位数据"""
-        if os.path.exists(self.data_file):
-            try:
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # 兼容旧版数据结构
-                    if "groups" not in data:
-                        # 转换旧数据到新格式
-                        new_data = {
-                            "groups": {
-                                "private": {  # 旧版数据全部归入私聊组
-                                    "players": data.get("players", {}),
-                                    "history": data.get("history", [])
-                                }
-                            }
-                        }
-                        return new_data
-                    return data
-            except Exception as e:
-                logging.error(f"加载排位数据失败: {e}")
-                return {"groups": {}}
-        return {"groups": {}}
-    
-    def _save_ranks(self) -> bool:
-        """保存排位数据"""
+    def _get_db_conn(self) -> sqlite3.Connection:
+        """获取数据库连接"""
         try:
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(self.ranks, f, ensure_ascii=False, indent=2)
-            return True
-        except Exception as e:
-            logging.error(f"保存排位数据失败: {e}")
-            return False
+            conn = sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)
+            conn.row_factory = sqlite3.Row  # 让查询结果可以像字典一样访问列
+            return conn
+        except sqlite3.Error as e:
+            logger_duel.error(f"无法连接到 SQLite 数据库 '{self.db_path}': {e}", exc_info=True)
+            raise  # 连接失败是严重问题，直接抛出异常
+    
+    def _init_db(self):
+        """初始化数据库，创建表（如果不存在）"""
+        sql_create_players = """
+        CREATE TABLE IF NOT EXISTS duel_players (
+            group_id TEXT NOT NULL,
+            player_name TEXT NOT NULL,
+            score INTEGER DEFAULT 1000,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            total_matches INTEGER DEFAULT 0,
+            elder_wand INTEGER DEFAULT 0,
+            magic_stone INTEGER DEFAULT 0,
+            invisibility_cloak INTEGER DEFAULT 0,
+            last_updated TEXT,
+            PRIMARY KEY (group_id, player_name)
+        );
+        """
+        sql_create_history = """
+        CREATE TABLE IF NOT EXISTS duel_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            winner TEXT NOT NULL,
+            loser TEXT NOT NULL,
+            is_boss_fight INTEGER DEFAULT 0,
+            magic_power INTEGER,
+            points INTEGER,
+            used_item TEXT,
+            items_gained TEXT,
+            winner_hp INTEGER,
+            rounds INTEGER
+        );
+        """
+        # 创建索引可以提高查询效率
+        sql_index_history_group = "CREATE INDEX IF NOT EXISTS idx_duel_history_group ON duel_history (group_id);"
+        sql_index_history_time = "CREATE INDEX IF NOT EXISTS idx_duel_history_time ON duel_history (timestamp DESC);"
+
+        try:
+            with self._db_lock:
+                with self._get_db_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(sql_create_players)
+                    cursor.execute(sql_create_history)
+                    cursor.execute(sql_index_history_group)
+                    cursor.execute(sql_index_history_time)
+                    conn.commit()
+            logger_duel.info("数据库表 'duel_players' 和 'duel_history' 检查/创建 完成。")
+        except sqlite3.Error as e:
+            logger_duel.error(f"创建/检查数据库表失败: {e}", exc_info=True)
+            raise  # 初始化失败是严重问题
     
     def get_player_data(self, player_name: str) -> Dict:
         """获取玩家数据，如果不存在则创建"""
-        group_data = self.ranks["groups"][self.group_id]
-        players = group_data["players"]
-        if player_name not in players:
-            players[player_name] = {
-                "score": 1000,  # 初始积分
+        try:
+            with self._db_lock:
+                with self._get_db_conn() as conn:
+                    cursor = conn.cursor()
+                    # 查询玩家数据
+                    sql_query = """
+                    SELECT * FROM duel_players 
+                    WHERE group_id = ? AND player_name = ?
+                    """
+                    cursor.execute(sql_query, (self.group_id, player_name))
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        # 将 sqlite3.Row 转换为字典
+                        player_data = dict(result)
+                        # 构造特殊的 items 字典
+                        player_data["items"] = {
+                            "elder_wand": player_data.pop("elder_wand", 0),
+                            "magic_stone": player_data.pop("magic_stone", 0),
+                            "invisibility_cloak": player_data.pop("invisibility_cloak", 0)
+                        }
+                        return player_data
+                    else:
+                        # 玩家不存在，创建新玩家
+                        default_data = {
+                            "score": 1000,
+                            "wins": 0,
+                            "losses": 0,
+                            "total_matches": 0,
+                            "items": {
+                                "elder_wand": 0,
+                                "magic_stone": 0,
+                                "invisibility_cloak": 0
+                            }
+                        }
+                        
+                        # 插入新玩家数据
+                        sql_insert = """
+                        INSERT INTO duel_players
+                        (group_id, player_name, score, wins, losses, total_matches,
+                         elder_wand, magic_stone, invisibility_cloak, last_updated)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        """
+                        cursor.execute(sql_insert, (
+                            self.group_id,
+                            player_name,
+                            default_data["score"],
+                            default_data["wins"],
+                            default_data["losses"],
+                            default_data["total_matches"],
+                            default_data["items"]["elder_wand"],
+                            default_data["items"]["magic_stone"],
+                            default_data["items"]["invisibility_cloak"]
+                        ))
+                        conn.commit()
+                        
+                        logger_duel.info(f"创建了新玩家: {player_name} 在群组 {self.group_id}")
+                        return default_data
+        
+        except sqlite3.Error as e:
+            logger_duel.error(f"获取玩家数据失败: {e}", exc_info=True)
+            # 出错时返回默认数据
+            return {
+                "score": 1000,
                 "wins": 0,
                 "losses": 0,
                 "total_matches": 0,
-                "items": {  # 新增道具字段
-                    "elder_wand": 0,  # 老魔杖次数
-                    "magic_stone": 0,  # 魔法石次数
-                    "invisibility_cloak": 0  # 隐身衣次数
+                "items": {
+                    "elder_wand": 0,
+                    "magic_stone": 0,
+                    "invisibility_cloak": 0
                 }
             }
-        # 兼容旧数据，确保有items字段
-        if "items" not in players[player_name]:
-            players[player_name]["items"] = {
-                "elder_wand": 0,
-                "magic_stone": 0,
-                "invisibility_cloak": 0
-            }
-        return players[player_name]
     
     def update_score(self, winner: str, loser: str, winner_hp: int, rounds: int) -> Tuple[int, int]:
         """更新玩家积分
@@ -119,34 +197,58 @@ class DuelRankSystem:
         hp_percent_bonus = winner_hp / 100.0  # 血量百分比
         points = int(base_points * (hp_percent_bonus))  # 血量越多，积分越高
         
-        # 确保为零和游戏 - 胜者得到的积分等于败者失去的积分
-        winner_data["score"] += points
-        winner_data["wins"] += 1
-        winner_data["total_matches"] += 1
-        
-        loser_data["score"] = max(1, loser_data["score"] - points)  # 防止积分小于1
-        loser_data["losses"] += 1
-        loser_data["total_matches"] += 1
-        
-        # 记录对战历史
-        match_record = {
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "winner": winner,
-            "loser": loser,
-            "winner_hp": winner_hp,
-            "rounds": rounds,
-            "points": points
-        }
-        self.ranks["groups"][self.group_id]["history"].append(match_record)
-        
-        # 如果历史记录太多，保留最近的100条
-        if len(self.ranks["groups"][self.group_id]["history"]) > 100:
-            self.ranks["groups"][self.group_id]["history"] = self.ranks["groups"][self.group_id]["history"][-100:]
-        
-        # 保存数据
-        self._save_ranks()
-        
-        return (points, points)  # 返回胜者得分和败者失分（相同）
+        try:
+            with self._db_lock:
+                with self._get_db_conn() as conn:
+                    cursor = conn.cursor()
+                    
+                    # 更新胜利者数据
+                    sql_update_winner = """
+                    UPDATE duel_players SET 
+                    score = score + ?,
+                    wins = wins + 1,
+                    total_matches = total_matches + 1,
+                    last_updated = datetime('now')
+                    WHERE group_id = ? AND player_name = ?
+                    """
+                    cursor.execute(sql_update_winner, (points, self.group_id, winner))
+                    
+                    # 更新失败者数据
+                    sql_update_loser = """
+                    UPDATE duel_players SET 
+                    score = MAX(1, score - ?),
+                    losses = losses + 1,
+                    total_matches = total_matches + 1,
+                    last_updated = datetime('now')
+                    WHERE group_id = ? AND player_name = ?
+                    """
+                    cursor.execute(sql_update_loser, (points, self.group_id, loser))
+                    
+                    # 记录对战历史
+                    sql_history = """
+                    INSERT INTO duel_history (
+                        group_id, timestamp, winner, loser, 
+                        points, winner_hp, rounds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """
+                    cursor.execute(sql_history, (
+                        self.group_id,
+                        time.strftime("%Y-%m-%d %H:%M:%S"),
+                        winner,
+                        loser,
+                        points,
+                        winner_hp,
+                        rounds
+                    ))
+                    
+                    conn.commit()
+                    logger_duel.info(f"{winner} 击败 {loser}，获得 {points} 积分")
+                    
+                    return (points, points)  # 返回胜者得分和败者失分（相同）
+                    
+        except sqlite3.Error as e:
+            logger_duel.error(f"更新积分失败: {e}", exc_info=True)
+            return (0, 0)  # 出错时返回0分
     
     def get_rank_list(self, top_n: int = 10) -> List[Dict]:
         """获取排行榜
@@ -157,14 +259,47 @@ class DuelRankSystem:
         Returns:
             List[Dict]: 排行榜数据
         """
-        players = self.ranks["groups"][self.group_id]["players"]
-        # 按积分排序
-        ranked_players = sorted(
-            [{"name": name, **data} for name, data in players.items()],
-            key=lambda x: x["score"],
-            reverse=True
-        )
-        return ranked_players[:top_n]
+        try:
+            with self._db_lock:
+                with self._get_db_conn() as conn:
+                    cursor = conn.cursor()
+                    sql_query = """
+                    SELECT player_name, score, wins, losses, total_matches,
+                           elder_wand, magic_stone, invisibility_cloak
+                    FROM duel_players
+                    WHERE group_id = ?
+                    ORDER BY score DESC
+                    LIMIT ?
+                    """
+                    cursor.execute(sql_query, (self.group_id, top_n))
+                    results = cursor.fetchall()
+                    
+                    # 转换结果为字典列表，格式与原JSON格式相同
+                    ranked_players = []
+                    for row in results:
+                        player_dict = dict(row)
+                        player_name = player_dict.pop("player_name")
+                        
+                        # 构造与原格式相同的字典
+                        player = {
+                            "name": player_name,
+                            "score": player_dict["score"],
+                            "wins": player_dict["wins"],
+                            "losses": player_dict["losses"],
+                            "total_matches": player_dict["total_matches"],
+                            "items": {
+                                "elder_wand": player_dict["elder_wand"],
+                                "magic_stone": player_dict["magic_stone"],
+                                "invisibility_cloak": player_dict["invisibility_cloak"]
+                            }
+                        }
+                        ranked_players.append(player)
+                    
+                    return ranked_players
+                    
+        except sqlite3.Error as e:
+            logger_duel.error(f"获取排行榜失败: {e}", exc_info=True)
+            return []  # 出错时返回空列表
     
     def get_player_rank(self, player_name: str) -> Tuple[Optional[int], Dict]:
         """获取玩家排名
@@ -175,17 +310,36 @@ class DuelRankSystem:
         Returns:
             Tuple[Optional[int], Dict]: (排名, 玩家数据)
         """
-        if player_name not in self.ranks["groups"][self.group_id]["players"]:
-            return None, self.get_player_data(player_name)
-            
-        player_data = self.ranks["groups"][self.group_id]["players"][player_name]
-        rank_list = self.get_rank_list(9999)  # 获取完整排名
+        # 获取玩家数据
+        player_data = self.get_player_data(player_name)
         
-        for i, player in enumerate(rank_list):
-            if player["name"] == player_name:
-                return i + 1, player_data  # 排名从1开始
-                
-        return None, player_data  # 理论上不会到这里
+        try:
+            with self._db_lock:
+                with self._get_db_conn() as conn:
+                    cursor = conn.cursor()
+                    
+                    # 查询排行榜中有哪些分数比该玩家高
+                    sql_rank = """
+                    SELECT COUNT(*) + 1 as rank
+                    FROM duel_players
+                    WHERE group_id = ? AND score > (
+                        SELECT score FROM duel_players
+                        WHERE group_id = ? AND player_name = ?
+                    )
+                    """
+                    cursor.execute(sql_rank, (self.group_id, self.group_id, player_name))
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        rank = result["rank"]
+                        return rank, player_data
+                    else:
+                        # 找不到玩家排名，可能是新玩家
+                        return None, player_data
+                        
+        except sqlite3.Error as e:
+            logger_duel.error(f"获取玩家排名失败: {e}", exc_info=True)
+            return None, player_data  # 出错时返回None作为排名
     
     def change_player_name(self, old_name: str, new_name: str) -> bool:
         """更改玩家名称，保留历史战绩
@@ -197,33 +351,64 @@ class DuelRankSystem:
         Returns:
             bool: 是否成功更改
         """
-        group_data = self.ranks["groups"][self.group_id]
-        players = group_data["players"]
-        
-        # 检查旧名称是否存在
-        if old_name not in players:
-            return False
-            
-        # 检查新名称是否已存在
-        if new_name in players:
-            return False
-            
-        # 复制玩家数据到新名称
-        players[new_name] = players[old_name].copy()
-        
-        # 删除旧名称数据
-        del players[old_name]
-        
-        # 更新历史记录中的名称
-        for record in group_data["history"]:
-            if record["winner"] == old_name:
-                record["winner"] = new_name
-            if record["loser"] == old_name:
-                record["loser"] = new_name
-        
-        # 保存更改
-        self._save_ranks()
-        return True
+        try:
+            with self._db_lock:
+                with self._get_db_conn() as conn:
+                    cursor = conn.cursor()
+                    
+                    # 开启事务
+                    conn.execute("BEGIN TRANSACTION")
+                    
+                    # 检查旧名称是否存在
+                    sql_check_old = """
+                    SELECT COUNT(*) as count FROM duel_players
+                    WHERE group_id = ? AND player_name = ?
+                    """
+                    cursor.execute(sql_check_old, (self.group_id, old_name))
+                    if cursor.fetchone()["count"] == 0:
+                        conn.rollback()
+                        return False
+                    
+                    # 检查新名称是否已存在
+                    sql_check_new = """
+                    SELECT COUNT(*) as count FROM duel_players
+                    WHERE group_id = ? AND player_name = ?
+                    """
+                    cursor.execute(sql_check_new, (self.group_id, new_name))
+                    if cursor.fetchone()["count"] > 0:
+                        conn.rollback()
+                        return False
+                    
+                    # 更新玩家表
+                    sql_update_player = """
+                    UPDATE duel_players SET player_name = ?
+                    WHERE group_id = ? AND player_name = ?
+                    """
+                    cursor.execute(sql_update_player, (new_name, self.group_id, old_name))
+                    
+                    # 更新历史记录表中的胜者
+                    sql_update_winner = """
+                    UPDATE duel_history SET winner = ?
+                    WHERE group_id = ? AND winner = ?
+                    """
+                    cursor.execute(sql_update_winner, (new_name, self.group_id, old_name))
+                    
+                    # 更新历史记录表中的败者
+                    sql_update_loser = """
+                    UPDATE duel_history SET loser = ?
+                    WHERE group_id = ? AND loser = ?
+                    """
+                    cursor.execute(sql_update_loser, (new_name, self.group_id, old_name))
+                    
+                    # 提交事务
+                    conn.commit()
+                    logger_duel.info(f"成功将玩家 {old_name} 改名为 {new_name}")
+                    
+                    return True
+                    
+        except sqlite3.Error as e:
+            logger_duel.error(f"更改玩家名称失败: {e}", exc_info=True)
+            return False  # 出错时返回失败
     
     def update_score_by_magic(self, winner: str, loser: str, magic_power: int) -> Tuple[int, int]:
         """根据魔法分数更新玩家积分
@@ -236,40 +421,64 @@ class DuelRankSystem:
         Returns:
             Tuple[int, int]: (胜利者获得积分, 失败者失去积分)
         """
-        # 获取玩家数据
-        winner_data = self.get_player_data(winner)
-        loser_data = self.get_player_data(loser)
+        # 获取玩家数据 (这里只是为了确保玩家存在)
+        self.get_player_data(winner)
+        self.get_player_data(loser)
         
         # 使用魔法总分作为积分变化值
         points = magic_power
         
-        # 确保为零和游戏 - 胜者得到的积分等于败者失去的积分
-        winner_data["score"] += points
-        winner_data["wins"] += 1
-        winner_data["total_matches"] += 1
-        
-        loser_data["score"] = max(1, loser_data["score"] - points)  # 防止积分小于1
-        loser_data["losses"] += 1
-        loser_data["total_matches"] += 1
-        
-        # 记录对战历史
-        match_record = {
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "winner": winner,
-            "loser": loser,
-            "magic_power": magic_power,
-            "points": points
-        }
-        self.ranks["groups"][self.group_id]["history"].append(match_record)
-        
-        # 如果历史记录太多，保留最近的100条
-        if len(self.ranks["groups"][self.group_id]["history"]) > 100:
-            self.ranks["groups"][self.group_id]["history"] = self.ranks["groups"][self.group_id]["history"][-100:]
-        
-        # 保存数据
-        self._save_ranks()
-        
-        return (points, points)  # 返回胜者得分和败者失分（相同）
+        try:
+            with self._db_lock:
+                with self._get_db_conn() as conn:
+                    cursor = conn.cursor()
+                    
+                    # 更新胜利者数据
+                    sql_update_winner = """
+                    UPDATE duel_players SET 
+                    score = score + ?,
+                    wins = wins + 1,
+                    total_matches = total_matches + 1,
+                    last_updated = datetime('now')
+                    WHERE group_id = ? AND player_name = ?
+                    """
+                    cursor.execute(sql_update_winner, (points, self.group_id, winner))
+                    
+                    # 更新失败者数据
+                    sql_update_loser = """
+                    UPDATE duel_players SET 
+                    score = MAX(1, score - ?),
+                    losses = losses + 1,
+                    total_matches = total_matches + 1,
+                    last_updated = datetime('now')
+                    WHERE group_id = ? AND player_name = ?
+                    """
+                    cursor.execute(sql_update_loser, (points, self.group_id, loser))
+                    
+                    # 记录对战历史
+                    sql_history = """
+                    INSERT INTO duel_history (
+                        group_id, timestamp, winner, loser, 
+                        magic_power, points
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """
+                    cursor.execute(sql_history, (
+                        self.group_id,
+                        time.strftime("%Y-%m-%d %H:%M:%S"),
+                        winner,
+                        loser,
+                        magic_power,
+                        points
+                    ))
+                    
+                    conn.commit()
+                    logger_duel.info(f"{winner} 使用魔法击败 {loser}，获得 {points} 积分")
+                    
+                    return (points, points)  # 返回胜者得分和败者失分（相同）
+                    
+        except sqlite3.Error as e:
+            logger_duel.error(f"根据魔法分数更新积分失败: {e}", exc_info=True)
+            return (0, 0)  # 出错时返回0分
 
 class HarryPotterDuel:
     """决斗功能"""
@@ -430,48 +639,86 @@ class HarryPotterDuel:
                 items = ["elder_wand", "magic_stone", "invisibility_cloak"]
                 item_names = {"elder_wand": "老魔杖", "magic_stone": "魔法石", "invisibility_cloak": "隐身衣"}
                 
-                # 更新玩家装备，获得所有三种死亡圣器各一次使用机会
-                player_data = rank_system.get_player_data(winner["name"])
-                player_data["items"]["elder_wand"] += 1
-                player_data["items"]["magic_stone"] += 1
-                player_data["items"]["invisibility_cloak"] += 1
-                
-                # 胜利积分固定为200分
-                winner_points = 200
-                
-                # 更新玩家数据
-                player_data["score"] += winner_points
-                player_data["wins"] += 1
-                player_data["total_matches"] += 1
-                
-                # 记录对战历史
-                match_record = {
-                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "winner": winner["name"],
-                    "loser": loser["name"],
-                    "is_boss_fight": True,
-                    "points": winner_points,
-                    "items_gained": items  # 记录获得了所有道具
-                }
-                rank_system.ranks["groups"][self.group_id]["history"].append(match_record)
-                
-                # 保存数据
-                rank_system._save_ranks()
-                
-                # 获取胜利者当前排名
-                rank, _ = rank_system.get_player_rank(winner["name"])
-                rank_text = f"第{rank}名" if rank else "暂无排名"
-                
-                # 添加获得装备的信息
-                result = (
-                    f"🏆 {winner['name']} 以不可思议的实力击败了强大的Boss泡泡！\n\n"
-                    f"获得了三件死亡圣器！\n"
-                    f" 🪄   💎   🧥 \n\n"
-                    f"积分: +{winner_points}分 ({rank_text})"
-                )
-                
-                self.steps.append(result)
-                return self.steps
+                try:
+                    with rank_system._db_lock:
+                        with rank_system._get_db_conn() as conn:
+                            cursor = conn.cursor()
+                            
+                            # 获取当前玩家的道具数量
+                            sql_query = """
+                            SELECT elder_wand, magic_stone, invisibility_cloak
+                            FROM duel_players
+                            WHERE group_id = ? AND player_name = ?
+                            """
+                            cursor.execute(sql_query, (self.group_id, winner["name"]))
+                            result = cursor.fetchone()
+                            
+                            if result:
+                                # 更新玩家数据，增加道具
+                                sql_update = """
+                                UPDATE duel_players SET
+                                elder_wand = elder_wand + 1,
+                                magic_stone = magic_stone + 1,
+                                invisibility_cloak = invisibility_cloak + 1,
+                                score = score + ?,
+                                wins = wins + 1,
+                                total_matches = total_matches + 1,
+                                last_updated = datetime('now')
+                                WHERE group_id = ? AND player_name = ?
+                                """
+                                winner_points = 200  # 胜利积分固定为200分
+                                cursor.execute(sql_update, (winner_points, self.group_id, winner["name"]))
+                                
+                                # 记录对战历史
+                                sql_history = """
+                                INSERT INTO duel_history
+                                (group_id, timestamp, winner, loser, is_boss_fight, points, items_gained)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """
+                                cursor.execute(sql_history, (
+                                    self.group_id,
+                                    time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    winner["name"],
+                                    loser["name"],
+                                    1,  # is_boss_fight
+                                    winner_points,
+                                    json.dumps(items)
+                                ))
+                                
+                                conn.commit()
+                                
+                                # 查询更新后玩家排名
+                                sql_rank = """
+                                SELECT COUNT(*) + 1 as rank
+                                FROM duel_players
+                                WHERE group_id = ? AND score > (
+                                    SELECT score FROM duel_players
+                                    WHERE group_id = ? AND player_name = ?
+                                )
+                                """
+                                cursor.execute(sql_rank, (self.group_id, self.group_id, winner["name"]))
+                                rank_result = cursor.fetchone()
+                                rank = rank_result["rank"] if rank_result else None
+                                
+                                rank_text = f"第{rank}名" if rank else "暂无排名"
+                                
+                                # 添加获得装备的信息
+                                result = (
+                                    f"🏆 {winner['name']} 以不可思议的实力击败了强大的Boss泡泡！\n\n"
+                                    f"获得了三件死亡圣器！\n"
+                                    f" 🪄   💎   🧥 \n\n"
+                                    f"积分: +{winner_points}分 ({rank_text})"
+                                )
+                                
+                                self.steps.append(result)
+                                return self.steps
+                            else:
+                                # 玩家不存在，这种情况理论上不可能发生，但为安全添加
+                                logger_duel.error(f"Boss战获胜但找不到玩家 {winner['name']} 数据")
+                except sqlite3.Error as e:
+                    logger_duel.error(f"处理Boss战胜利时出错: {e}", exc_info=True)
+                    self.steps.append(f"⚠️ 处理战利品时遇到问题: {e}")
+                    return self.steps
                 
             else:  # 玩家输了
                 winner, loser = self.player2, self.player1
@@ -484,27 +731,40 @@ class HarryPotterDuel:
                 ]
                 self.steps.append(random.choice(defeat_end))
                 
-                # 获取积分系统实例 - 已经在方法开始处创建，这里删除
-                # rank_system = DuelRankSystem(self.group_id)
-                
-                # 特殊的积分扣除
-                player_data = rank_system.get_player_data(loser["name"])
-                player_data["score"] = max(1, player_data["score"] - 10)  # 固定扣10分
-                player_data["losses"] += 1
-                player_data["total_matches"] += 1
-                
-                # 记录对战历史
-                match_record = {
-                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "winner": winner["name"],
-                    "loser": loser["name"],
-                    "is_boss_fight": True,
-                    "points": 10  # 扣10分
-                }
-                rank_system.ranks["groups"][self.group_id]["history"].append(match_record)
-                
-                # 保存数据
-                rank_system._save_ranks()
+                try:
+                    with rank_system._db_lock:
+                        with rank_system._get_db_conn() as conn:
+                            cursor = conn.cursor()
+                            
+                            # 更新失败者数据
+                            sql_update = """
+                            UPDATE duel_players SET
+                            score = MAX(1, score - 10),
+                            losses = losses + 1,
+                            total_matches = total_matches + 1,
+                            last_updated = datetime('now')
+                            WHERE group_id = ? AND player_name = ?
+                            """
+                            cursor.execute(sql_update, (self.group_id, loser["name"]))
+                            
+                            # 记录对战历史
+                            sql_history = """
+                            INSERT INTO duel_history
+                            (group_id, timestamp, winner, loser, is_boss_fight, points)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """
+                            cursor.execute(sql_history, (
+                                self.group_id,
+                                time.strftime("%Y-%m-%d %H:%M:%S"),
+                                winner["name"],
+                                loser["name"],
+                                1,  # is_boss_fight
+                                10  # 扣10分
+                            ))
+                            
+                            conn.commit()
+                except sqlite3.Error as e:
+                    logger_duel.error(f"处理Boss战失败时出错: {e}", exc_info=True)
                 
                 result = (
                     f"💀 {loser['name']} 不敌强大的Boss泡泡！\n\n"
@@ -1053,64 +1313,128 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
     try:
         rank_system = DuelRankSystem(group_id)
 
-        # 获取双方数据和排名
-        attacker_rank, attacker_data = rank_system.get_player_rank(attacker_name)
-        target_rank, target_data = rank_system.get_player_rank(target_name)
-
         # 检查玩家是否存在
-        if attacker_name not in rank_system.ranks["groups"][group_id]["players"]:
-             return f"❌ 偷袭发起者 {attacker_name} 还没有决斗记录。"
-        if target_name not in rank_system.ranks["groups"][group_id]["players"]:
-            return f"❌ 目标 {target_name} 还没有决斗记录。"
+        with rank_system._db_lock:
+            with rank_system._get_db_conn() as conn:
+                cursor = conn.cursor()
+                
+                # 检查偷袭者是否存在
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM duel_players WHERE group_id = ? AND player_name = ?",
+                    (group_id, attacker_name)
+                )
+                if cursor.fetchone()["count"] == 0:
+                    return f"❌ 偷袭发起者 {attacker_name} 还没有决斗记录。"
+                
+                # 检查目标是否存在
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM duel_players WHERE group_id = ? AND player_name = ?",
+                    (group_id, target_name)
+                )
+                if cursor.fetchone()["count"] == 0:
+                    return f"❌ 目标 {target_name} 还没有决斗记录。"
+                
+                # 获取偷袭者排名
+                cursor.execute("""
+                SELECT COUNT(*) + 1 as rank FROM duel_players 
+                WHERE group_id = ? AND score > (
+                    SELECT score FROM duel_players 
+                    WHERE group_id = ? AND player_name = ?
+                )""", (group_id, group_id, attacker_name))
+                attacker_rank_result = cursor.fetchone()
+                attacker_rank = attacker_rank_result["rank"] if attacker_rank_result else None
+                
+                # 获取目标排名
+                cursor.execute("""
+                SELECT COUNT(*) + 1 as rank FROM duel_players 
+                WHERE group_id = ? AND score > (
+                    SELECT score FROM duel_players 
+                    WHERE group_id = ? AND player_name = ?
+                )""", (group_id, group_id, target_name))
+                target_rank_result = cursor.fetchone()
+                target_rank = target_rank_result["rank"] if target_rank_result else None
+                
+                # 获取总玩家数
+                cursor.execute("SELECT COUNT(*) as count FROM duel_players WHERE group_id = ?", (group_id,))
+                total_players = cursor.fetchone()["count"]
+                
+                # 计算成功率
+                success_prob = 0.3  # 基础成功率 30%
+                
+                # 计算概率加成（仅当双方都有排名且总人数大于0时）
+                if attacker_rank is not None and target_rank is not None and total_players > 0:
+                    if attacker_rank > target_rank:  # 偷袭者排名更低
+                        rank_difference = attacker_rank - target_rank
+                        # 排名差值影响概率，最多增加 40%
+                        success_prob += min((rank_difference / total_players) * 0.4, 0.4)
+                    # else: 偷袭者排名更高或相同，使用基础概率 30%
 
-        # 获取总玩家数
-        all_players = rank_system.get_rank_list(9999)
-        total_players = len(all_players)
+                # 确保概率在 0 到 1 之间
+                success_prob = max(0, min(1, success_prob))
 
-        success_prob = 0.3  # 基础成功率 30%
+                # 格式化概率显示为0-100%的百分比
+                prob_percent = success_prob * 100
+                logger_duel.info(f"偷袭计算: {attacker_name}({attacker_rank}) vs {target_name}({target_rank}), 总人数: {total_players}, 成功率: {prob_percent:.1f}%")
 
-        # 计算概率加成（仅当双方都有排名且总人数大于0时）
-        if attacker_rank is not None and target_rank is not None and total_players > 0:
-            if attacker_rank > target_rank:  # 偷袭者排名更低
-                rank_difference = attacker_rank - target_rank
-                # 排名差值影响概率，最多增加 40%
-                success_prob += min((rank_difference / total_players) * 0.4, 0.4)
-            # else: 偷袭者排名更高或相同，使用基础概率 30%
+                # 决定偷袭是否成功
+                if random.random() < success_prob:
+                    # --- 偷袭成功 ---
+                    # 获取分数差
+                    cursor.execute("""
+                    SELECT t1.score as attacker_score, t2.score as target_score
+                    FROM duel_players t1, duel_players t2
+                    WHERE t1.group_id = ? AND t1.player_name = ? 
+                      AND t2.group_id = ? AND t2.player_name = ?
+                    """, (group_id, attacker_name, group_id, target_name))
+                    result = cursor.fetchone()
+                    attacker_score = result["attacker_score"]
+                    target_score = result["target_score"]
+                    
+                    score_difference = abs(attacker_score - target_score)
+                    points_stolen = max(random.randint(10, 50), int(score_difference * 0.1))  # 偷取(10-50)或分数差的10%，取最大值
 
-        # 确保概率在 0 到 1 之间
-        success_prob = max(0, min(1, success_prob))
+                    # 更新分数
+                    cursor.execute(
+                        "UPDATE duel_players SET score = score + ? WHERE group_id = ? AND player_name = ?",
+                        (points_stolen, group_id, attacker_name)
+                    )
+                    cursor.execute(
+                        "UPDATE duel_players SET score = MAX(1, score - ?) WHERE group_id = ? AND player_name = ?",
+                        (points_stolen, group_id, target_name)
+                    )
+                    
+                    # 记录到历史记录（可选）
+                    cursor.execute("""
+                    INSERT INTO duel_history (group_id, timestamp, winner, loser, points)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, (
+                        group_id,
+                        time.strftime("%Y-%m-%d %H:%M:%S"),
+                        attacker_name,
+                        target_name,
+                        points_stolen
+                    ))
+                    
+                    # 提交事务
+                    conn.commit()
 
-        # 格式化概率显示为0-100%的百分比
-        prob_percent = success_prob * 100
-        logging.info(f"偷袭计算: {attacker_name}({attacker_rank}) vs {target_name}({target_rank}), 总人数: {total_players}, 成功率: {prob_percent:.1f}%")
+                    # 选择并格式化成功消息
+                    message_template = random.choice(SNEAK_ATTACK_SUCCESS_MESSAGES)
+                    result_message = message_template.format(attacker=attacker_name, target=target_name, points=points_stolen)
+                    logger_duel.info(f"偷袭成功: {attacker_name} 偷取 {target_name} {points_stolen} 分")
 
-        # 决定偷袭是否成功
-        if random.random() < success_prob:
-            # --- 偷袭成功 ---
-            score_difference = abs(attacker_data['score'] - target_data['score'])
-            points_stolen = max(random.randint(10, 50), int(score_difference * 0.1))  # 偷取(10-50)或分数差的10%，取最大值
+                else:
+                    # --- 偷袭失败 ---
+                    # 选择并格式化失败消息
+                    message_template = random.choice(SNEAK_ATTACK_FAILURE_MESSAGES)
+                    result_message = message_template.format(attacker=attacker_name, target=target_name)
+                    logger_duel.info(f"偷袭失败: {attacker_name} 偷袭 {target_name}")
 
-            # 更新分数
-            attacker_data['score'] += points_stolen
-            target_data['score'] = max(1, target_data['score'] - points_stolen)  # 确保分数不低于1
-            
-            # 保存数据
-            rank_system._save_ranks()
+                return result_message
 
-            # 选择并格式化成功消息
-            message_template = random.choice(SNEAK_ATTACK_SUCCESS_MESSAGES)
-            result_message = message_template.format(attacker=attacker_name, target=target_name, points=points_stolen)
-            logging.info(f"偷袭成功: {attacker_name} 偷取 {target_name} {points_stolen} 分")
-
-        else:
-            # --- 偷袭失败 ---
-            # 选择并格式化失败消息
-            message_template = random.choice(SNEAK_ATTACK_FAILURE_MESSAGES)
-            result_message = message_template.format(attacker=attacker_name, target=target_name)
-            logging.info(f"偷袭失败: {attacker_name} 偷袭 {target_name}")
-
-        return result_message
-
+    except sqlite3.Error as e:
+        logger_duel.error(f"处理偷袭时发生数据库错误: {e}", exc_info=True)
+        return f"处理偷袭时发生内部错误: {e}"
     except Exception as e:
-        logging.error(f"处理偷袭时发生错误: {e}")
+        logger_duel.error(f"处理偷袭时发生未知错误: {e}", exc_info=True)
         return f"处理偷袭时发生内部错误: {e}"
