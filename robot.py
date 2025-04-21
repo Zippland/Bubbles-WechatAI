@@ -28,6 +28,7 @@ from ai_providers.ai_tigerbot import TigerBot
 from ai_providers.ai_xinghuo_web import XinghuoWeb
 from function.func_duel import start_duel, get_rank_list, get_player_stats, change_player_name, DuelManager, attempt_sneak_attack
 from function.func_summary import MessageSummary  # 导入新的MessageSummary类
+from function.func_reminder import ReminderManager  # 导入ReminderManager类
 from configuration import Config
 from constants import ChatType
 from job_mgmt import Job
@@ -48,6 +49,9 @@ class Robot(Job):
     """
 
     def __init__(self, config: Config, wcf: Wcf, chat_type: int) -> None:
+        # 调用父类构造函数
+        super().__init__()
+        
         self.wcf = wcf
         self.config = config
         self.LOG = logging.getLogger("Robot")
@@ -175,6 +179,16 @@ class Robot(Job):
         # 初始化命令路由器
         self.command_router = CommandRouter(COMMANDS, robot_instance=self)
         self.LOG.info(f"命令路由系统初始化完成，共加载 {len(COMMANDS)} 条命令")
+        
+        # 初始化提醒管理器
+        try:
+            # 使用与MessageSummary相同的数据库路径
+            db_path = getattr(self.message_summary, 'db_path', "data/message_history.db")
+            self.reminder_manager = ReminderManager(self, db_path)
+            self.LOG.info("提醒管理器已初始化，与消息历史使用相同数据库。")
+        except Exception as e:
+            self.LOG.error(f"初始化提醒管理器失败: {e}", exc_info=True)
+        
         # 输出命令列表信息，便于调试
         # self.LOG.debug(get_commands_info()) # 如果需要在日志中输出所有命令信息，取消本行注释
 

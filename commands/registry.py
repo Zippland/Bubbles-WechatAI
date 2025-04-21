@@ -5,7 +5,7 @@ from .handlers import (
     handle_duel_stats, handle_check_equipment, handle_reset_memory,
     handle_summary, handle_clear_messages, handle_news_request,
     handle_rename, handle_chengyu, handle_chitchat, handle_insult,
-    handle_perplexity_ask
+    handle_perplexity_ask, handle_reminder, handle_list_reminders, handle_delete_reminder
 )
 
 # 命令列表，按优先级排序
@@ -158,8 +158,37 @@ COMMANDS = [
         description="成语接龙与查询"
     ),
     
-    # ======== 闲聊命令 (最低优先级，作为后备) ========
-    # 注意：这个通常不会直接匹配，而是在其他命令都匹配失败后手动调用
+    # ======== 提醒功能 ========
+    Command(
+        name="reminder",
+        pattern=re.compile(r"^(提醒\s*.+)$", re.IGNORECASE | re.DOTALL), # 匹配"提醒"开头（可无空格），捕获包括"提醒"在内的完整内容
+        scope="private",    # 仅限私聊
+        need_at=False,      # 不需要 @ 机器人
+        priority=35,        # 优先级适中，在基础命令后，复杂功能或闲聊前
+        handler=handle_reminder,
+        description="设置一个私人提醒 (例如：提醒 明天下午3点 开会 或 提醒我早上七点起床)"
+    ),
+    
+    Command(
+        name="list_reminders",
+        pattern=re.compile(r"^(查看提醒|我的提醒|提醒列表)$", re.IGNORECASE),
+        scope="private",
+        need_at=False,
+        priority=36, # 优先级略低于设置提醒
+        handler=handle_list_reminders,
+        description="查看您设置的所有提醒"
+    ),
+    
+    Command(
+        name="delete_reminder",
+        # 匹配 "删除提醒 " 后跟任意内容，用于删除特定提醒
+        pattern=re.compile(r"^(删除提醒|取消提醒)\s+(.+)$", re.IGNORECASE | re.DOTALL),
+        scope="private",
+        need_at=False,
+        priority=37,
+        handler=handle_delete_reminder,
+        description="删除指定的提醒 (例如：删除提醒 ID:xxxxxx)"
+    ),
 ]
 
 # 可以添加一个函数，获取命令列表的简单描述

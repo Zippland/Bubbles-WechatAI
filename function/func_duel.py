@@ -466,7 +466,7 @@ class HarryPotterDuel:
                 result = (
                     f"🏆 {winner['name']} 以不可思议的实力击败了强大的Boss泡泡！\n\n"
                     f"获得了三件死亡圣器！\n"
-                    f"🪄 💎 🧥\n\n"
+                    f" 🪄   💎   🧥 \n\n"
                     f"积分: +{winner_points}分 ({rank_text})"
                 )
                 

@@ -1,5 +1,7 @@
 import re
 from typing import Optional, Match, Dict, Any
+import json # 确保已导入json
+from datetime import datetime # 确保已导入datetime
 
 # 导入AI模型
 from ai_providers.ai_deepseek import DeepSeek
@@ -793,3 +795,207 @@ def handle_perplexity_ask(ctx: 'MessageContext', match: Optional[Match]) -> bool
                     ctx.logger.error(f"使用备选prompt调用默认AI时出错: {e}")
     
     return was_handled 
+
+def handle_reminder(ctx: 'MessageContext', match: Optional[Match]) -> bool:
+    """处理来自私聊的 '提醒' 命令"""
+    # 1. 检查是否为私聊
+    if ctx.is_group:
+        return False # 此命令仅限私聊
+
+    # 2. 获取用户输入的提醒内容（现在包含"提醒"字样）
+    raw_text = match.group(1).strip()
+    if not raw_text or raw_text == "提醒":
+        ctx.send_text("请告诉我需要提醒什么内容和时间呀~ (例如：提醒 明天下午3点 开会 或 提醒我早上七点起床)")
+        return True
+
+    # 3. 构造给 AI 的 Prompt
+    sys_prompt = """
+你是提醒解析助手。请分析用户输入的提醒信息，并严格按照以下 JSON 格式输出结果：
+{{
+  "type": "once" | "daily" | "weekly",                 // 提醒类型: "once" (一次性) 或 "daily" (每日重复) 或 "weekly" (每周重复)
+  "time": "YYYY-MM-DD HH:MM" | "HH:MM",     // "once"类型必须是 'YYYY-MM-DD HH:MM' 格式, "daily"与"weekly"类型必须是 'HH:MM' 格式。时间必须是未来的。
+  "content": "提醒的具体内容文本",
+  "weekday": 0-6,                           // 仅当 type="weekly" 时需要，周一=0, 周二=1, ..., 周日=6
+  "extra": {{}}                              // 保留字段，目前为空对象即可
+}}
+- 分析用户意图判断是 `once`, `daily` 还是 `weekly`。
+- 如果是相对时间（如"明天"、"后天"、"下周一"），请计算出精确的 `YYYY-MM-DD HH:MM` 格式。
+- 如果只说了时间（如"每天早上9点"），类型设为 `daily`，时间格式为 `HH:MM`。
+- 如果是每周特定时间（如"每周一下午3点"），类型设为 `weekly`，提供正确的 weekday 值和 HH:MM 时间。
+- 如果无法确定时间或内容，不要猜测，返回错误提示，这样我可以提醒用户提供更明确的信息。
+- 输出结果必须是纯 JSON，不包含任何其他说明文字。
+
+当前准确时间是：{current_datetime}
+"""
+    current_dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    formatted_prompt = sys_prompt.format(current_datetime=current_dt_str)
+
+    # 4. 调用 AI 模型进行解析
+    q_for_ai = f"请解析以下用户提醒:\n{raw_text}"
+    ai_response_text = "" # 初始化为空字符串
+    try:
+        if not hasattr(ctx, 'chat') or not ctx.chat:
+             raise ValueError("当前上下文中没有可用的 AI 模型")
+
+        ai_response_text = ctx.chat.get_answer(q_for_ai, ctx.get_receiver(), system_prompt_override=formatted_prompt)
+
+        # 5. 解析 AI 返回的 JSON
+        #    使用正则表达式提取 JSON 部分，增加鲁棒性
+        json_match = re.search(r'\{.*\}', ai_response_text, re.DOTALL)
+        if not json_match:
+            # 尝试直接解析，以防 AI 精确返回 JSON
+            try:
+                data = json.loads(ai_response_text)
+            except json.JSONDecodeError:
+                 raise ValueError(f"AI 未返回有效的 JSON 结构。原始回复: {ai_response_text[:200]}...") # 增加原始回复片段
+        else:
+             try:
+                data = json.loads(json_match.group(0))
+             except json.JSONDecodeError as json_err:
+                 raise ValueError(f"提取的 JSON 结构无效: {json_err}. 原始回复: {ai_response_text[:200]}...")
+
+        # 增强校验，提供更好的错误反馈
+        # 检查内容是否过于模糊
+        if not data.get("content") or len(data["content"].strip()) < 2:
+            ctx.send_text("❌ 提醒内容似乎太短或不明确，请提供更具体的提醒内容。")
+            return True
+            
+        # 检查时间格式是否明确
+        if data.get("type") == "once":
+            try:
+                dt = datetime.strptime(data["time"], "%Y-%m-%d %H:%M")
+                if dt < datetime.now():
+                    ctx.send_text("❌ 提醒时间必须是未来的时间。请重新设置一个未来的时间点。")
+                    return True
+            except ValueError:
+                ctx.send_text("❌ 一次性提醒的时间格式不正确。请使用像“明天下午3点”这样明确的时间表述。")
+                return True
+                
+        # 检查 weekly 类型是否提供了 weekday
+        if data.get("type") == "weekly" and not (isinstance(data.get("weekday"), int) and 0 <= data.get("weekday") <= 6):
+            ctx.send_text("❌ 每周提醒需要明确指定是周几，例如“每周一早上9点”。")
+            return True
+
+        if ctx.logger: ctx.logger.info(f"AI 成功解析提醒，JSON: {data}")
+
+    except Exception as e:
+        error_msg = f"❌ 解析提醒时出错: {e}"
+        ctx.send_text(error_msg)
+        if ctx.logger: ctx.logger.error(error_msg, exc_info=True)
+        return True # 即使失败，命令也处理完毕
+
+    # 6. 将解析结果交给 ReminderManager 处理
+    if not hasattr(ctx.robot, 'reminder_manager'):
+         ctx.send_text("❌ 内部错误：提醒管理器未初始化。")
+         if ctx.logger: ctx.logger.error("handle_reminder 无法访问 ctx.robot.reminder_manager")
+         return True
+
+    success, result_or_id = ctx.robot.reminder_manager.add_reminder(ctx.msg.sender, data)
+
+    # 7. 向用户反馈结果
+    if success:
+        reminder_id = result_or_id
+        # 构建更友好的回复，根据提醒类型进行定制
+        type_str = {
+            "once": "一次性",
+            "daily": "每日",
+            "weekly": "每周"
+        }.get(data.get("type"), "未知类型")
+        
+        # 格式化时间显示，使其更友好
+        time_display = data.get("time", "未知时间")
+        if data.get("type") == "weekly" and "weekday" in data:
+            weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+            if 0 <= data["weekday"] <= 6:
+                time_display = f"{weekdays[data['weekday']]} {time_display}"
+        
+        reply_msg = f"✅ 好的，已为您设置{type_str}提醒 (ID: {reminder_id[:6]}):\n" \
+                    f"时间: {time_display}\n" \
+                    f"内容: {data.get('content', '无')}"
+        ctx.send_text(reply_msg)
+    else:
+        error_message = result_or_id # 此时 result_or_id 是错误信息
+        ctx.send_text(f"❌ 设置提醒失败: {error_message}")
+
+    return True # 命令处理流程结束
+
+def handle_list_reminders(ctx: 'MessageContext', match: Optional[Match]) -> bool:
+    """处理查看提醒命令"""
+    if ctx.is_group:
+        return False # 仅私聊
+
+    if not hasattr(ctx.robot, 'reminder_manager'):
+        ctx.send_text("❌ 内部错误：提醒管理器未初始化。")
+        return True
+
+    reminders = ctx.robot.reminder_manager.list_reminders(ctx.msg.sender)
+
+    if not reminders:
+        ctx.send_text("您还没有设置任何提醒。")
+        return True
+
+    reply_parts = ["📝 您设置的提醒列表：\n"]
+    for i, r in enumerate(reminders):
+        # 格式化星期几（如果存在）
+        weekday_str = ""
+        if r.get("weekday") is not None:
+            weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+            weekday_str = f" (每周{weekdays[r['weekday']]})" if 0 <= r['weekday'] <= 6 else ""
+
+        # 格式化时间
+        time_display = r['time_str']
+        if r['type'] == 'once':
+            # 一次性提醒显示完整日期时间
+            time_display = r['time_str'] + " (一次性)"
+        elif r['type'] == 'daily':
+            time_display = f"每天 {r['time_str']}"
+        elif r['type'] == 'weekly':
+            if 0 <= r.get('weekday', -1) <= 6:
+                time_display = f"每周{weekdays[r['weekday']]} {r['time_str']}"
+            else:
+                time_display = f"每周 {r['time_str']}"
+
+        reply_parts.append(
+            f"{i+1}. [ID: {r['id'][:6]}] {time_display}: {r['content']}"
+        )
+    ctx.send_text("\n".join(reply_parts))
+    return True
+
+def handle_delete_reminder(ctx: 'MessageContext', match: Optional[Match]) -> bool:
+    """处理删除提醒命令"""
+    if ctx.is_group:
+        return False # 仅私聊
+
+    if not hasattr(ctx.robot, 'reminder_manager'):
+        ctx.send_text("❌ 内部错误：提醒管理器未初始化。")
+        return True
+
+    user_input_description = match.group(2).strip() # 用户描述要删除哪个提醒
+    if not user_input_description:
+        ctx.send_text("请告诉我您想删除哪个提醒（例如：删除提醒 开会的那个 / 删除提醒 ID: xxxxxx）")
+        return True
+
+    # 检查用户输入是否直接是 ID (简单可靠)
+    potential_id_match = re.match(r"^(?:id[:：\s]*)?([a-f0-9]{6,})$", user_input_description, re.IGNORECASE)
+    if potential_id_match:
+        partial_id = potential_id_match.group(1)
+        # 需要从数据库查找完整的 ID
+        reminders = ctx.robot.reminder_manager.list_reminders(ctx.msg.sender)
+        found_id = None
+        for r in reminders:
+            if r['id'].startswith(partial_id):
+                if found_id: # 如果匹配到多个，则不明确
+                    ctx.send_text(f"❌ 找到多个以 '{partial_id}' 开头的提醒ID，请提供更完整的ID。")
+                    return True
+                found_id = r['id']
+
+        if found_id:
+            success, message = ctx.robot.reminder_manager.delete_reminder(ctx.msg.sender, found_id)
+            ctx.send_text(message)
+        else:
+            ctx.send_text(f"❌ 未找到 ID 以 '{partial_id}' 开头的提醒。您可以使用 '查看提醒' 获取完整列表和ID。")
+        return True
+    
+    # 如果不是ID，则提示用户先查看提醒列表
+    ctx.send_text("请先使用 '查看提醒' 命令获取您的提醒列表，然后使用 '删除提醒 ID:xxxxxx' 的格式删除特定提醒。")
+    return True 
