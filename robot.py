@@ -240,10 +240,13 @@ class Robot(Job):
                         # 成语功能已经通过命令路由器处理，这里不需要再处理
                         pass
                         
-                # 5.4 私聊文本消息，未被命令处理，进行闲聊
-                elif not msg.from_group() and msg.type == 1 and not msg.from_self():
-                    # 调用handle_chitchat函数处理闲聊
-                    handle_chitchat(ctx, None)
+                # 5.4 私聊消息，未被命令处理，进行闲聊
+                elif not msg.from_group() and not msg.from_self():
+                    # 检查是否是文本消息(type 1)或者是包含用户输入的类型49消息
+                    if msg.type == 1 or (msg.type == 49 and ctx.text):
+                        self.LOG.info(f"准备回复私聊消息: 类型={msg.type}, 文本内容='{ctx.text}'")
+                        # 调用handle_chitchat函数处理闲聊
+                        handle_chitchat(ctx, None)
                     
         except Exception as e:
             self.LOG.error(f"处理消息时发生错误: {str(e)}", exc_info=True)

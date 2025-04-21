@@ -552,10 +552,18 @@ def handle_chitchat(ctx: 'MessageContext', match: Optional[Match]) -> bool:
             # 处理群聊消息
             msg_data = ctx.robot.xml_processor.extract_quoted_message(ctx.msg)
             q_with_info = ctx.robot.xml_processor.format_message_for_ai(msg_data, sender_name)
+            # 打印详细的消息数据，用于调试
+            if ctx.logger:
+                ctx.logger.info(f"【调试】群聊消息解析结果: type={ctx.msg.type}")
+                ctx.logger.info(f"【调试】提取的卡片信息: {msg_data}")
         else:
             # 处理私聊消息
             msg_data = ctx.robot.xml_processor.extract_private_quoted_message(ctx.msg)
             q_with_info = ctx.robot.xml_processor.format_message_for_ai(msg_data, sender_name)
+            # 打印详细的消息数据，用于调试
+            if ctx.logger:
+                ctx.logger.info(f"【调试】私聊消息解析结果: type={ctx.msg.type}")
+                ctx.logger.info(f"【调试】提取的卡片信息: {msg_data}")
         
         if not q_with_info:
             import time
@@ -570,7 +578,7 @@ def handle_chitchat(ctx: 'MessageContext', match: Optional[Match]) -> bool:
     # 获取AI回复
     try:
         if ctx.logger:
-            ctx.logger.info(f"发送给AI的消息内容: {q_with_info}")
+            ctx.logger.info(f"【发送内容】将以下消息发送给AI: \n{q_with_info}")
         
         rsp = chat_model.get_answer(q_with_info, ctx.get_receiver())
         
