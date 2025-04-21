@@ -37,9 +37,21 @@ class ChatGPT():
                 return True
         return False
 
-    def get_answer(self, question: str, wxid: str) -> str:
+    def get_answer(self, question: str, wxid: str, system_prompt_override=None) -> str:
         # wxid或者roomid,个人时为微信id，群消息时为群id
+        # 如果是第一次对话且提供了临时system prompt，将在updateMessage中使用
+        if system_prompt_override:
+            # 临时保存原始系统提示，以便可以恢复
+            original_prompt = self.system_content_msg["content"]
+            # 设置临时系统提示
+            self.system_content_msg["content"] = system_prompt_override
+            
         self.updateMessage(wxid, question, "user")
+        
+        # 如果使用了临时system prompt，在更新完消息后恢复原始设置
+        if system_prompt_override:
+            self.system_content_msg["content"] = original_prompt
+            
         rsp = ""
         try:
             # o系列模型不支持自定义temperature，只能使用默认值1

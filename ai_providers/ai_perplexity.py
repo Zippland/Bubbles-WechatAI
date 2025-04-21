@@ -269,6 +269,7 @@ class Perplexity:
         self.proxy = config.get('proxy')
         self.prompt = config.get('prompt', '你是智能助手Perplexity')
         self.trigger_keyword = config.get('trigger_keyword', 'ask')
+        self.fallback_prompt = config.get('fallback_prompt', "请像 Perplexity 一样，以专业、客观、信息丰富的方式回答问题。不要使用任何tex或者md格式,纯文本输出。")
         self.LOG = logging.getLogger('Perplexity')
         
         # 权限控制 - 允许使用Perplexity的群聊和个人ID
@@ -391,16 +392,27 @@ class Perplexity:
             send_text_func: 发送消息的函数
             
         Returns:
-            bool: 是否已处理该消息；返回False表示需要由普通AI处理
+            tuple[bool, Optional[str]]: 
+                - bool: 是否已处理该消息
+                - Optional[str]: 无权限时的备选prompt，其他情况为None
         """
         # 检查是否包含触发词
         if content.startswith(self.trigger_keyword):
             # 检查权限
             if not self.is_allowed(chat_id, sender, from_group):
                 # 不在允许列表中，返回False让普通AI处理请求
-                # 不要发送任何提示信息，完全隐藏功能
-                self.LOG.info(f"用户/群聊 {chat_id} 无Perplexity权限，转由普通AI处理")
-                return False
+                # 但同时返回备选 prompt
+                self.LOG.info(f"用户/群聊 {chat_id} 无Perplexity权限，将使用 fallback_prompt 转由普通AI处理")
+                # 获取实际要问的问题内容
+                prompt = content[len(self.trigger_keyword):].strip()
+                if prompt:  # 确保确实有提问内容
+                    return False, self.fallback_prompt  # 返回 False 表示未处理，并带上备选 prompt
+                else:
+                    # 如果只有触发词没有问题，还是按原逻辑处理（发送提示消息）
+                    send_text_func(f"请在{self.trigger_keyword}后面添加您的问题", 
+                                  roomid if from_group else sender,
+                                  sender if from_group else None)
+                    return True, None  # 已处理（发送了错误提示）
                 
             prompt = content[len(self.trigger_keyword):].strip()
             if prompt:
@@ -409,7 +421,7 @@ class Perplexity:
                 at_user = sender if from_group else None
                 
                 # 启动请求处理
-                return self.thread_manager.start_request(
+                request_started = self.thread_manager.start_request(
                     perplexity_instance=self,
                     prompt=prompt,
                     chat_id=chat_id,
@@ -417,15 +429,16 @@ class Perplexity:
                     receiver=receiver,
                     at_user=at_user
                 )
+                return request_started, None  # 返回启动结果，无备选prompt
             else:
                 # 触发词后没有内容
                 send_text_func(f"请在{self.trigger_keyword}后面添加您的问题", 
                               roomid if from_group else sender,
                               sender if from_group else None)
-                return True
+                return True, None  # 已处理（发送了错误提示）
         
         # 不包含触发词
-        return False
+        return False, None  # 未处理，无备选prompt
     
     def cleanup(self):
         """清理所有资源"""

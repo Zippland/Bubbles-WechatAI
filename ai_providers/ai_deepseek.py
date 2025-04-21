@@ -44,7 +44,7 @@ class DeepSeek():
                 return True
         return False
 
-    def get_answer(self, question: str, wxid: str) -> str:
+    def get_answer(self, question: str, wxid: str, system_prompt_override=None) -> str:
         if question == "#清除对话":
             if wxid in self.conversation_list.keys():
                 del self.conversation_list[wxid]
@@ -78,8 +78,14 @@ class DeepSeek():
             
         if wxid not in self.conversation_list:
             self.conversation_list[wxid] = []
-            if self.system_content_msg["content"]:
+            # 如果提供了临时的system prompt，优先使用它
+            if system_prompt_override:
+                self.conversation_list[wxid].append({"role": "system", "content": system_prompt_override})
+            elif self.system_content_msg["content"]:
                 self.conversation_list[wxid].append(self.system_content_msg)
+        # 如果提供了临时的system prompt且对话已经存在，替换第一条system消息
+        elif system_prompt_override and len(self.conversation_list[wxid]) > 0 and self.conversation_list[wxid][0]["role"] == "system":
+            self.conversation_list[wxid][0]["content"] = system_prompt_override
 
         self.conversation_list[wxid].append({"role": "user", "content": question})
 

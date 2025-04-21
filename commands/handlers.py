@@ -705,7 +705,7 @@ def handle_perplexity_ask(ctx: 'MessageContext', match: Optional[Match]) -> bool
     is_group = ctx.is_group
     
     # 5. 调用 process_message 并返回其结果
-    was_handled = perplexity_instance.process_message(
+    was_handled, fallback_prompt = perplexity_instance.process_message(
         content=content_for_perplexity,
         chat_id=chat_id,
         sender=sender_wxid,
@@ -713,5 +713,63 @@ def handle_perplexity_ask(ctx: 'MessageContext', match: Optional[Match]) -> bool
         from_group=is_group,
         send_text_func=ctx.send_text
     )
+    
+    # 6. 如果没有被处理且有备选prompt，使用默认AI处理
+    if not was_handled and fallback_prompt:
+        if ctx.logger:
+            ctx.logger.info(f"使用备选prompt '{fallback_prompt[:20]}...' 调用默认AI处理")
+        
+        # 获取当前选定的AI模型
+        chat_model = None
+        if hasattr(ctx, 'chat'):
+            chat_model = ctx.chat
+        elif ctx.robot and hasattr(ctx.robot, 'chat'):
+            chat_model = ctx.robot.chat
+        
+        if chat_model:
+            # 使用与 handle_chitchat 类似的逻辑，但使用备选prompt
+            try:
+                # 格式化消息，与 handle_chitchat 保持一致
+                if ctx.robot and hasattr(ctx.robot, "xml_processor"):
+                    if ctx.is_group:
+                        msg_data = ctx.robot.xml_processor.extract_quoted_message(ctx.msg)
+                        q_with_info = ctx.robot.xml_processor.format_message_for_ai(msg_data, ctx.sender_name)
+                    else:
+                        msg_data = ctx.robot.xml_processor.extract_private_quoted_message(ctx.msg)
+                        q_with_info = ctx.robot.xml_processor.format_message_for_ai(msg_data, ctx.sender_name)
+                    
+                    if not q_with_info:
+                        import time
+                        current_time = time.strftime("%H:%M", time.localtime())
+                        q_with_info = f"[{current_time}] {ctx.sender_name}: {prompt or '[空内容]'}"
+                else:
+                    import time
+                    current_time = time.strftime("%H:%M", time.localtime())
+                    q_with_info = f"[{current_time}] {ctx.sender_name}: {prompt or '[空内容]'}"
+                
+                if ctx.logger:
+                    ctx.logger.info(f"发送给默认AI的消息内容: {q_with_info}")
+                
+                # 调用 AI 模型时传入备选 prompt
+                # 需要调整 get_answer 方法以支持 system_prompt_override 参数
+                # 这里我们假设已对各AI模型实现了这个参数
+                rsp = chat_model.get_answer(q_with_info, ctx.get_receiver(), system_prompt_override=fallback_prompt)
+                
+                if rsp:
+                    # 发送回复
+                    at_list = ctx.msg.sender if ctx.is_group else ""
+                    ctx.send_text(rsp, at_list)
+                    
+                    # 尝试触发馈赠
+                    if ctx.is_group and hasattr(ctx.robot, "goblin_gift_manager"):
+                        ctx.robot.goblin_gift_manager.try_trigger(ctx.msg)
+                    
+                    return True
+                else:
+                    if ctx.logger:
+                        ctx.logger.error("无法从默认AI获得答案")
+            except Exception as e:
+                if ctx.logger:
+                    ctx.logger.error(f"使用备选prompt调用默认AI时出错: {e}")
     
     return was_handled 
