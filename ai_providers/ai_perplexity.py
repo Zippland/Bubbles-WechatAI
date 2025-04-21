@@ -58,15 +58,15 @@ class PerplexityThread(Thread):
                 # 移除Markdown格式符号
                 response = self.remove_markdown_formatting(response)
                 
-                self.send_text_func(response, self.receiver, self.at_user)
+                self.send_text_func(response, at_list=self.at_user)
             else:
-                self.send_text_func("无法从Perplexity获取回答", self.receiver, self.at_user)
+                self.send_text_func("无法从Perplexity获取回答", at_list=self.at_user)
                 
             self.LOG.info(f"Perplexity请求处理完成: {self.prompt[:30]}...")
             
         except Exception as e:
             self.LOG.error(f"处理Perplexity请求时出错: {e}")
-            self.send_text_func(f"处理请求时出错: {e}", self.receiver, self.at_user)
+            self.send_text_func(f"处理请求时出错: {e}", at_list=self.at_user)
     
     def remove_thinking_content(self, text):
         """移除<think></think>标签之间的思考内容
@@ -196,11 +196,11 @@ class PerplexityManager:
         with self.lock:
             # 检查是否已有正在处理的相同请求
             if thread_key in self.threads and self.threads[thread_key].is_alive():
-                send_text_func("⚠️ 已有一个Perplexity请求正在处理中，请稍后再试", receiver, at_user)
+                send_text_func("⚠️ 已有一个Perplexity请求正在处理中，请稍后再试", at_list=at_user)
                 return False
             
             # 发送等待消息
-            send_text_func("正在使用Perplexity进行深度研究，请稍候...", receiver, at_user)
+            send_text_func("正在使用Perplexity进行深度研究，请稍候...", at_list=at_user)
             
             # 创建并启动新线程处理请求
             perplexity_thread = PerplexityThread(
