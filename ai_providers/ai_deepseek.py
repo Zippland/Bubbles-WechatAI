@@ -76,28 +76,36 @@ class DeepSeek():
             self.show_reasoning = True
             return "已设置显示思维链"
             
+        # 初始化对话历史（只在首次时添加系统提示）
         if wxid not in self.conversation_list:
             self.conversation_list[wxid] = []
-            # 如果提供了临时的system prompt，优先使用它
-            if system_prompt_override:
-                self.conversation_list[wxid].append({"role": "system", "content": system_prompt_override})
-            elif self.system_content_msg["content"]:
+            # 只有在这里才添加默认的系统提示到对话历史中
+            if self.system_content_msg["content"]:
                 self.conversation_list[wxid].append(self.system_content_msg)
-        # 如果提供了临时的system prompt且对话已经存在，替换第一条system消息
-        elif system_prompt_override and len(self.conversation_list[wxid]) > 0 and self.conversation_list[wxid][0]["role"] == "system":
-            self.conversation_list[wxid][0]["content"] = system_prompt_override
-
+        
+        # 添加用户问题到对话历史
         self.conversation_list[wxid].append({"role": "user", "content": question})
 
         try:
-            clean_messages = []
-            for msg in self.conversation_list[wxid]:
-                clean_msg = {"role": msg["role"], "content": msg["content"]}
-                clean_messages.append(clean_msg)
+            # 准备API调用的消息列表
+            api_messages = []
+            
+            # 检查是否需要使用临时系统提示
+            if system_prompt_override:
+                # 如果提供了临时系统提示，在API调用时使用它（不修改对话历史）
+                api_messages.append({"role": "system", "content": system_prompt_override})
+                # 添加除了系统提示外的所有历史消息
+                for msg in self.conversation_list[wxid]:
+                    if msg["role"] != "system":
+                        api_messages.append({"role": msg["role"], "content": msg["content"]})
+            else:
+                # 如果没有临时系统提示，使用完整的对话历史
+                for msg in self.conversation_list[wxid]:
+                    api_messages.append({"role": msg["role"], "content": msg["content"]})
 
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=clean_messages,
+                messages=api_messages,
                 stream=False
             )
 

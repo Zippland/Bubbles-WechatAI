@@ -39,25 +39,62 @@ class ChatGPT():
 
     def get_answer(self, question: str, wxid: str, system_prompt_override=None) -> str:
         # wxid或者roomid,个人时为微信id，群消息时为群id
-        # 如果是第一次对话且提供了临时system prompt，将在updateMessage中使用
+        
+        # 检查是否是新对话
+        is_new_conversation = wxid not in self.conversation_list
+        
+        # 保存临时系统提示的状态
+        temp_system_used = False
+        original_prompt = None
+        
         if system_prompt_override:
-            # 临时保存原始系统提示，以便可以恢复
-            original_prompt = self.system_content_msg["content"]
-            # 设置临时系统提示
-            self.system_content_msg["content"] = system_prompt_override
-            
+            # 只有新对话才临时修改系统提示
+            if is_new_conversation:
+                # 临时保存原始系统提示，以便可以恢复
+                original_prompt = self.system_content_msg["content"]
+                # 设置临时系统提示
+                self.system_content_msg["content"] = system_prompt_override
+                temp_system_used = True
+                self.LOG.debug(f"为新对话 {wxid} 临时设置系统提示")
+            else:
+                # 对于已存在的对话，我们将在API调用时临时使用覆盖提示，而不修改对话历史
+                self.LOG.debug(f"对话 {wxid} 已存在，系统提示覆盖将仅用于本次API调用")
+        
+        # 添加用户问题到对话历史
         self.updateMessage(wxid, question, "user")
         
-        # 如果使用了临时system prompt，在更新完消息后恢复原始设置
-        if system_prompt_override:
+        # 如果修改了系统提示，现在恢复它
+        if temp_system_used and original_prompt is not None:
             self.system_content_msg["content"] = original_prompt
-            
+            self.LOG.debug(f"已恢复默认系统提示")
+        
         rsp = ""
         try:
+            # 准备API调用的消息列表
+            api_messages = []
+            
+            # 对于已存在的对话，临时应用系统提示覆盖（如果有）
+            if not is_new_conversation and system_prompt_override:
+                # 第一个消息可能是系统提示
+                has_system = self.conversation_list[wxid][0]["role"] == "system"
+                
+                # 使用临时系统提示替代原始系统提示
+                if has_system:
+                    # 复制除了系统提示外的所有消息
+                    api_messages = [{"role": "system", "content": system_prompt_override}]
+                    api_messages.extend(self.conversation_list[wxid][1:])
+                else:
+                    # 如果没有系统提示，添加一个
+                    api_messages = [{"role": "system", "content": system_prompt_override}]
+                    api_messages.extend(self.conversation_list[wxid])
+            else:
+                # 对于新对话或没有临时系统提示的情况，使用原始对话历史
+                api_messages = self.conversation_list[wxid]
+            
             # o系列模型不支持自定义temperature，只能使用默认值1
             params = {
                 "model": self.model,
-                "messages": self.conversation_list[wxid]
+                "messages": api_messages
             }
             
             # 只有非o系列模型才设置temperature
@@ -169,34 +206,46 @@ class ChatGPT():
             self.LOG.error(f"分析图片时发生未知错误：{str(e0)}")
             return f"处理图片时出错：{str(e0)}"
 
-    def updateMessage(self, wxid: str, question: str, role: str) -> None:
+    def updateMessage(self, wxid: str, content: str, role: str) -> None:
         now_time = str(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         time_mk = "当需要回答时间时请直接参考回复:"
         # 初始化聊天记录,组装系统信息
         if wxid not in self.conversation_list.keys():
+            # 此时self.system_content_msg可能已经被get_answer临时修改
+            # 但这没关系，因为在get_answer结束前会恢复
             question_ = [
                 self.system_content_msg,
                 {"role": "system", "content": "" + time_mk + now_time}
             ]
             self.conversation_list[wxid] = question_
 
-        # 当前问题
-        content_question_ = {"role": role, "content": question}
-        self.conversation_list[wxid].append(content_question_)
+        # 当前问题或回答
+        content_message = {"role": role, "content": content}
+        self.conversation_list[wxid].append(content_message)
 
+        # 更新时间标记
         for cont in self.conversation_list[wxid]:
             if cont["role"] != "system":
                 continue
             if cont["content"].startswith(time_mk):
                 cont["content"] = time_mk + now_time
 
+        # 控制对话历史长度
         # 只存储10条记录，超过滚动清除
+        max_history = 12  # 包括1个系统提示和1个时间标记
         i = len(self.conversation_list[wxid])
-        if i > 10:
-            print("滚动清除微信记录：" + wxid)
-            # 删除多余的记录，倒着删，且跳过第一个的系统消息
-            del self.conversation_list[wxid][1]
+        if i > max_history:
+            # 计算需要删除多少条记录
+            if self.conversation_list[wxid][0]["role"] == "system" and self.conversation_list[wxid][1]["role"] == "system":
+                # 如果前两条都是系统消息，保留它们，删除较早的用户和助手消息
+                to_delete = i - max_history
+                del self.conversation_list[wxid][2:2+to_delete]
+                self.LOG.debug(f"滚动清除微信记录：{wxid}，删除了{to_delete}条历史消息")
+            else:
+                # 如果结构不符合预期，简单地保留最近的消息
+                self.conversation_list[wxid] = self.conversation_list[wxid][-max_history:]
+                self.LOG.debug(f"滚动清除微信记录：{wxid}，只保留最近{max_history}条消息")
 
 
 if __name__ == "__main__":
