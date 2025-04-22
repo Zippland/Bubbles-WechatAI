@@ -1398,7 +1398,7 @@ SNEAK_ATTACK_ITEM_SUCCESS_MESSAGES = [
     "趁乱摸鱼！{attacker} 竟然从 {target} 身上摸走了一件 {item_name_cn}！真是妙手空空！👏",
     "运气爆棚！{attacker} 偷袭失败，但顺走了 {target} 的一件 {item_name_cn}！🥳",
     "{target} 光顾着得意，没注意到 {attacker} 悄悄拿走了一件 {item_name_cn}！🤭",
-    "“失之东隅，收之桑榆”，{attacker} 虽然没偷到分，但拐走了一件 {item_name_cn}！🎁",
+    "失之东隅，收之桑榆。{attacker} 虽然没偷到分，但拐走了一件 {item_name_cn}！🎁",
     "神偷再现！{attacker} 从 {target} 那里顺走了一件 {item_name_cn}！🔮",
 ]
 
@@ -1540,60 +1540,91 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
 
                 else:
                     # --- 偷袭失败，尝试偷道具 ---
-                    logger_duel.info(f"偷袭分数失败: {attacker_name} 偷袭 {target_name}. 尝试偷道具...")
-                    item_steal_prob = 0.05  # 5% 概率偷道具
-                    
-                    if random.random() < item_steal_prob:
-                        # 获取目标玩家道具信息
-                        cursor.execute("""
-                        SELECT elder_wand, magic_stone, invisibility_cloak
-                        FROM duel_players
-                        WHERE group_id = ? AND player_name = ?
-                        """, (group_id, target_name))
-                        result = cursor.fetchone()
+                    logger_duel.info(f"偷袭分数失败: {attacker_name} 偷袭 {target_name}. 尝试根据目标道具数量计算偷道具概率...")
+
+                    # --- 修改：提前获取目标道具信息以计算概率 ---
+                    cursor.execute("""
+                    SELECT elder_wand, magic_stone, invisibility_cloak
+                    FROM duel_players
+                    WHERE group_id = ? AND player_name = ?
+                    """, (group_id, target_name))
+                    target_items_result = cursor.fetchone() # 使用新变量名避免混淆
+
+                    item_steal_prob = 0.0 # 初始化概率为 0
+                    total_items_count = 0
+
+                    if target_items_result:
+                        # 计算总道具数量
+                        total_items_count = (target_items_result["elder_wand"] +
+                                             target_items_result["magic_stone"] +
+                                             target_items_result["invisibility_cloak"])
+
+                        # 计算动态概率，每件道具增加 1%，上限暂定为 10%
+                        dynamic_prob = total_items_count * 0.01
+                        item_steal_prob = min(dynamic_prob, 0.10) # 最高 10%
+                        logger_duel.info(f"目标共有 {total_items_count} 件道具，计算出的偷道具概率为: {item_steal_prob*100:.1f}% (原始计算值: {dynamic_prob*100:.1f}%)")
+                    else:
+                         # 如果查询不到目标道具信息（理论上不应发生，因为前面检查过玩家存在）
+                         logger_duel.warning(f"未能查询到目标 {target_name} 的道具信息，无法计算偷道具概率。")
+                         item_steal_prob = 0.0 # 无法计算则概率为0
+
+                    # --- 使用计算出的 item_steal_prob 进行判断 ---
+                    if total_items_count > 0 and random.random() < item_steal_prob:
+                        # --- 概率判定成功，且目标确实有道具可偷 ---
+                        logger_duel.info(f"偷道具判定成功 (概率 {item_steal_prob*100:.1f}%)，开始选择道具...")
                         
-                        if result:
-                            # 构建可偷道具列表和权重
-                            available_item_names = []
-                            item_weights = []
+                        # --- 复用之前获取的 target_items_result 构建列表 ---
+                        available_item_names = []
+                        item_weights = []
                             
-                            if result["elder_wand"] > 0:
-                                available_item_names.append("elder_wand")
-                                item_weights.append(result["elder_wand"])
+                        if target_items_result["elder_wand"] > 0:
+                            available_item_names.append("elder_wand")
+                            item_weights.append(target_items_result["elder_wand"])
+                        
+                        if target_items_result["magic_stone"] > 0:
+                            available_item_names.append("magic_stone")
+                            item_weights.append(target_items_result["magic_stone"])
+                        
+                        if target_items_result["invisibility_cloak"] > 0:
+                            available_item_names.append("invisibility_cloak")
+                            item_weights.append(target_items_result["invisibility_cloak"])
+                        
+                        # 这个检查理论上可以省略，因为前面 total_items_count > 0 已经保证了列表非空
+                        # 但为了代码健壮性可以保留
+                        if available_item_names:
+                            # 根据权重随机选择一件道具
+                            item_stolen = random.choices(available_item_names, weights=item_weights, k=1)[0]
+                            item_name_cn = ITEM_NAME_MAP.get(item_stolen, item_stolen)
                             
-                            if result["magic_stone"] > 0:
-                                available_item_names.append("magic_stone")
-                                item_weights.append(result["magic_stone"])
+                            # 更新数据库：目标减道具，攻击者加道具
+                            sql_update_target = f"UPDATE duel_players SET {item_stolen} = MAX(0, {item_stolen} - 1) WHERE group_id = ? AND player_name = ?"
+                            sql_update_attacker = f"UPDATE duel_players SET {item_stolen} = {item_stolen} + 1 WHERE group_id = ? AND player_name = ?"
                             
-                            if result["invisibility_cloak"] > 0:
-                                available_item_names.append("invisibility_cloak")
-                                item_weights.append(result["invisibility_cloak"])
+                            cursor.execute(sql_update_target, (group_id, target_name))
+                            cursor.execute(sql_update_attacker, (group_id, attacker_name))
+                            conn.commit() # 偷道具成功，提交事务
                             
-                            if available_item_names:
-                                # 根据权重随机选择一件道具
-                                item_stolen = random.choices(available_item_names, weights=item_weights, k=1)[0]
-                                item_name_cn = ITEM_NAME_MAP.get(item_stolen, item_stolen)
-                                
-                                # 更新数据库：目标减道具，攻击者加道具
-                                sql_update_target = f"UPDATE duel_players SET {item_stolen} = MAX(0, {item_stolen} - 1) WHERE group_id = ? AND player_name = ?"
-                                sql_update_attacker = f"UPDATE duel_players SET {item_stolen} = {item_stolen} + 1 WHERE group_id = ? AND player_name = ?"
-                                
-                                cursor.execute(sql_update_target, (group_id, target_name))
-                                cursor.execute(sql_update_attacker, (group_id, attacker_name))
-                                conn.commit()
-                                
-                                # 选择并格式化偷道具成功消息
-                                message_template = random.choice(SNEAK_ATTACK_ITEM_SUCCESS_MESSAGES)
-                                result_message = message_template.format(attacker=attacker_name, target=target_name, item_name_cn=item_name_cn)
-                                logger_duel.info(f"偷道具成功: {attacker_name} 偷取了 {target_name} 的 {item_stolen}")
-                                return result_message
-                    
-                    # 偷分失败且偷道具也失败或目标没有道具
+                            # 选择并格式化偷道具成功消息
+                            message_template = random.choice(SNEAK_ATTACK_ITEM_SUCCESS_MESSAGES)
+                            result_message = message_template.format(attacker=attacker_name, target=target_name, item_name_cn=item_name_cn)
+                            logger_duel.info(f"偷道具成功: {attacker_name} 偷取了 {target_name} 的 {item_stolen}")
+                            # 偷到道具直接返回，不再执行后面的失败逻辑
+                            return result_message
+                        else:
+                             # 如果因为某种原因（例如并发问题），刚才还有道具现在没了
+                             logger_duel.warning(f"尝试偷取 {target_name} 道具时发现其道具列表为空，虽然 total_items_count > 0。")
+                             # 这里会继续执行下面的通用失败逻辑
+
+                    # --- 偷道具判定失败 或 目标没有任何道具 ---
+                    # (包括 total_items_count 为 0 的情况, 以及 random.random() >= item_steal_prob 的情况)
                     message_template = random.choice(SNEAK_ATTACK_FAILURE_MESSAGES)
                     result_message = message_template.format(attacker=attacker_name, target=target_name)
-                    logger_duel.info(f"偷袭完全失败: {attacker_name} 偷袭 {target_name}")
-
-                return result_message
+                    if total_items_count == 0:
+                         logger_duel.info(f"偷袭完全失败: {attacker_name} 偷袭 {target_name}，且目标没有任何道具。")
+                    else:
+                         logger_duel.info(f"偷袭完全失败: {attacker_name} 偷袭 {target_name}，未达到偷道具概率 {item_steal_prob*100:.1f}%。")
+                    # 注意：偷分失败并不需要提交事务，因为没有改动数据库
+                    # conn.commit() # 这一行是多余的，应该删除
 
     except sqlite3.Error as e:
         logger_duel.error(f"处理偷袭时发生数据库错误: {e}", exc_info=True)
