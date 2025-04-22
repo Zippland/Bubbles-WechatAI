@@ -761,7 +761,7 @@ class HarryPotterDuel:
                                 last_updated = datetime('now')
                                 WHERE group_id = ? AND player_name = ?
                                 """
-                                winner_points = 200  # 胜利积分固定为200分
+                                winner_points = 500  # 胜利积分固定为500分
                                 cursor.execute(sql_update, (winner_points, self.group_id, winner["name"]))
                                 
                                 # 记录对战历史
