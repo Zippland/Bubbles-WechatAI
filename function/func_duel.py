@@ -612,7 +612,7 @@ class HarryPotterDuel:
             # Boss战胜率极低，设为10%
             self.player_win_chance = 0.1
             # 添加Boss战提示信息
-            self.steps.append("⚔️ Boss战开始！挑战强大的魔法师泡泡！")
+            self.steps.append("⚔️ Boss战开始 ⚔️\n挑战强大的魔法师泡泡！")
             
         # 设置防御成功率
         self.defense_success_rate = 0.3
@@ -1319,7 +1319,6 @@ class DuelManager:
                 return
                 
             # 开始决斗
-            self.send_duel_message("⚔️ 决斗即将开始，请稍等...", receiver)
             # 传递群组ID参数
             group_id = receiver
             duel_steps = start_duel(challenger_name, opponent_name, group_id, True)  # challenger_name是发起者
