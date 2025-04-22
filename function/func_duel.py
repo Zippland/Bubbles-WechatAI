@@ -489,7 +489,7 @@ class DuelRankSystem:
             winner_points: 胜利者获得的积分
             loser_points: 失败者失去的积分
             total_magic_power: 决斗中使用的总魔法力
-            used_item: 本次决斗中使用的道具名称 (可选) 
+            used_item: 本次决斗中使用的道具名称 (可选)
                        可能是 "elder_wand"(老魔杖), "magic_stone"(魔法石), "invisibility_cloak"(隐身衣)
             
         Returns:
@@ -1061,7 +1061,7 @@ class HarryPotterDuel:
         if winner_data["items"].get("elder_wand", 0) > 0:
             # 如果失败者没用魔法石，才显示胜利加成信息（避免信息重复）
             if used_item_loser != "magic_stone":
-                 self.steps.append(f"🪄 {winner['name']} 使用了老魔杖，魔法威力增加了五倍！")
+                self.steps.append(f"🪄 {winner['name']} 使用了老魔杖，魔法威力增加了五倍！")
             else: # 如果失败者用了魔法石，补充说明胜利者也用了老魔杖
                  self.steps.append(f"🪄 同时，{winner['name']} 使用了老魔杖，得分加倍！")
             used_item_winner = "elder_wand"
@@ -1625,6 +1625,7 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
                          logger_duel.info(f"偷袭完全失败: {attacker_name} 偷袭 {target_name}，未达到偷道具概率 {item_steal_prob*100:.1f}%。")
                     # 注意：偷分失败并不需要提交事务，因为没有改动数据库
                     # conn.commit() # 这一行是多余的，应该删除
+                return result_message
 
     except sqlite3.Error as e:
         logger_duel.error(f"处理偷袭时发生数据库错误: {e}", exc_info=True)
