@@ -58,36 +58,17 @@ class DuelRankSystem:
             PRIMARY KEY (group_id, player_name)
         );
         """
-        sql_create_history = """
-        CREATE TABLE IF NOT EXISTS duel_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            group_id TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            winner TEXT NOT NULL,
-            loser TEXT NOT NULL,
-            is_boss_fight INTEGER DEFAULT 0,
-            magic_power INTEGER,
-            points INTEGER,
-            used_item TEXT,
-            items_gained TEXT,
-            winner_hp INTEGER,
-            rounds INTEGER
-        );
-        """
-        # 创建索引可以提高查询效率
-        sql_index_history_group = "CREATE INDEX IF NOT EXISTS idx_duel_history_group ON duel_history (group_id);"
-        sql_index_history_time = "CREATE INDEX IF NOT EXISTS idx_duel_history_time ON duel_history (timestamp DESC);"
+        # 移除了 duel_history 表的创建语句
+        # 移除了相关索引的创建语句
 
         try:
             with self._db_lock:
                 with self._get_db_conn() as conn:
                     cursor = conn.cursor()
                     cursor.execute(sql_create_players)
-                    cursor.execute(sql_create_history)
-                    cursor.execute(sql_index_history_group)
-                    cursor.execute(sql_index_history_time)
+                    # 移除了执行创建 duel_history 表和索引的命令
                     conn.commit()
-            logger_duel.info("数据库表 'duel_players' 和 'duel_history' 检查/创建 完成。")
+            logger_duel.info("数据库表 'duel_players' 检查/创建 完成。")
         except sqlite3.Error as e:
             logger_duel.error(f"创建/检查数据库表失败: {e}", exc_info=True)
             raise  # 初始化失败是严重问题
@@ -224,22 +205,7 @@ class DuelRankSystem:
                     """
                     cursor.execute(sql_update_loser, (points, self.group_id, loser))
                     
-                    # 记录对战历史
-                    sql_history = """
-                    INSERT INTO duel_history (
-                        group_id, timestamp, winner, loser, 
-                        points, winner_hp, rounds
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """
-                    cursor.execute(sql_history, (
-                        self.group_id,
-                        time.strftime("%Y-%m-%d %H:%M:%S"),
-                        winner,
-                        loser,
-                        points,
-                        winner_hp,
-                        rounds
-                    ))
+                    # 移除了记录对战历史的代码
                     
                     conn.commit()
                     logger_duel.info(f"{winner} 击败 {loser}，获得 {points} 积分")
@@ -342,7 +308,7 @@ class DuelRankSystem:
             return None, player_data  # 出错时返回None作为排名
     
     def change_player_name(self, old_name: str, new_name: str) -> bool:
-        """更改玩家名称，保留历史战绩
+        """更改玩家名称
         
         Args:
             old_name: 旧名称
@@ -386,19 +352,7 @@ class DuelRankSystem:
                     """
                     cursor.execute(sql_update_player, (new_name, self.group_id, old_name))
                     
-                    # 更新历史记录表中的胜者
-                    sql_update_winner = """
-                    UPDATE duel_history SET winner = ?
-                    WHERE group_id = ? AND winner = ?
-                    """
-                    cursor.execute(sql_update_winner, (new_name, self.group_id, old_name))
-                    
-                    # 更新历史记录表中的败者
-                    sql_update_loser = """
-                    UPDATE duel_history SET loser = ?
-                    WHERE group_id = ? AND loser = ?
-                    """
-                    cursor.execute(sql_update_loser, (new_name, self.group_id, old_name))
+                    # 移除了更新历史记录表中的胜者和败者名称的代码
                     
                     # 提交事务
                     conn.commit()
@@ -455,21 +409,7 @@ class DuelRankSystem:
                     """
                     cursor.execute(sql_update_loser, (points, self.group_id, loser))
                     
-                    # 记录对战历史
-                    sql_history = """
-                    INSERT INTO duel_history (
-                        group_id, timestamp, winner, loser, 
-                        magic_power, points
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """
-                    cursor.execute(sql_history, (
-                        self.group_id,
-                        time.strftime("%Y-%m-%d %H:%M:%S"),
-                        winner,
-                        loser,
-                        magic_power,
-                        points
-                    ))
+                    # 移除了记录对战历史的代码
                     
                     conn.commit()
                     logger_duel.info(f"{winner} 使用魔法击败 {loser}，获得 {points} 积分")
@@ -543,23 +483,7 @@ class DuelRankSystem:
                         logger_duel.info(f"消耗了 {winner} 的隐身衣 (剩余数量将被更新)")
                     # --------------------------
 
-                    # 记录对战历史
-                    sql_history = """
-                    INSERT INTO duel_history (
-                        group_id, timestamp, winner, loser, 
-                        magic_power, points, used_item
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """
-                    # 注意: history 表中的 points 字段记录胜者得分
-                    cursor.execute(sql_history, (
-                        self.group_id,
-                        time.strftime("%Y-%m-%d %H:%M:%S"),
-                        winner,
-                        loser,
-                        total_magic_power,
-                        winner_points, # 记录胜者最终获得的积分
-                        used_item # 记录使用的道具
-                    ))
+                    # 移除了记录对战历史的代码
                     
                     conn.commit()
                     logger_duel.info(f"{winner} 在决斗中击败 {loser}，胜者积分 +{winner_points}，败者积分 -{loser_points}，使用道具: {used_item or '无'}")
@@ -764,21 +688,7 @@ class HarryPotterDuel:
                                 winner_points = 300  # 胜利积分固定为500分
                                 cursor.execute(sql_update, (winner_points, self.group_id, winner["name"]))
                                 
-                                # 记录对战历史
-                                sql_history = """
-                                INSERT INTO duel_history
-                                (group_id, timestamp, winner, loser, is_boss_fight, points, items_gained)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                                """
-                                cursor.execute(sql_history, (
-                                    self.group_id,
-                                    time.strftime("%Y-%m-%d %H:%M:%S"),
-                                    winner["name"],
-                                    loser["name"],
-                                    1,  # is_boss_fight
-                                    winner_points,
-                                    json.dumps(items)
-                                ))
+                                # 移除了记录对战历史的代码
                                 
                                 conn.commit()
                                 
@@ -842,20 +752,7 @@ class HarryPotterDuel:
                             """
                             cursor.execute(sql_update, (self.group_id, loser["name"]))
                             
-                            # 记录对战历史
-                            sql_history = """
-                            INSERT INTO duel_history
-                            (group_id, timestamp, winner, loser, is_boss_fight, points)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                            """
-                            cursor.execute(sql_history, (
-                                self.group_id,
-                                time.strftime("%Y-%m-%d %H:%M:%S"),
-                                winner["name"],
-                                loser["name"],
-                                1,  # is_boss_fight
-                                100  # 扣100分
-                            ))
+                            # 移除了记录对战历史的代码
                             
                             conn.commit()
                 except sqlite3.Error as e:
@@ -1268,7 +1165,7 @@ def change_player_name(old_name: str, new_name: str, group_id=None) -> str:
         result = rank_system.change_player_name(old_name, new_name)
         
         if result:
-            return f"✅ 已成功将本群中的玩家 \"{old_name}\" 改名为 \"{new_name}\"，历史战绩已保留"
+            return f"✅ 已成功将本群中的玩家 \"{old_name}\" 改名为 \"{new_name}\""
         else:
             return f"❌ 改名失败：请确认 \"{old_name}\" 在本群中有战绩记录，且 \"{new_name}\" 名称未被使用"
     except Exception as e:
@@ -1534,17 +1431,7 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
                             (actual_points_exchanged, group_id, target_name)
                         )
                         
-                        # 记录到历史记录
-                        cursor.execute("""
-                        INSERT INTO duel_history (group_id, timestamp, winner, loser, points)
-                        VALUES (?, ?, ?, ?, ?)
-                        """, (
-                            group_id,
-                            time.strftime("%Y-%m-%d %H:%M:%S"),
-                            attacker_name, # 偷袭者视为 "winner"
-                            target_name, # 被偷袭者视为 "loser"
-                            actual_points_exchanged # 使用实际交换的分数
-                        ))
+                        # 移除了记录到历史记录的代码
                         
                         # 提交事务
                         conn.commit()
