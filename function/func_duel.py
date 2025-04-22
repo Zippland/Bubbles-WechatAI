@@ -489,7 +489,8 @@ class DuelRankSystem:
             winner_points: 胜利者获得的积分
             loser_points: 失败者失去的积分
             total_magic_power: 决斗中使用的总魔法力
-            used_item: 本次决斗中使用的道具名称 (可选)
+            used_item: 本次决斗中使用的道具名称 (可选) 
+                       可能是 "elder_wand"(老魔杖), "magic_stone"(魔法石), "invisibility_cloak"(隐身衣)
             
         Returns:
             Tuple[int, int]: (胜利者实际获得积分, 失败者实际失去积分)
@@ -527,16 +528,19 @@ class DuelRankSystem:
                     """
                     cursor.execute(sql_update_loser, (loser_points, self.group_id, loser))
 
-                    # --- 处理道具消耗 ---
+                    # --- 改进处理道具消耗逻辑 ---
                     if used_item == "elder_wand":
                         # 老魔杖是胜利者使用的
                         cursor.execute("UPDATE duel_players SET elder_wand = MAX(0, elder_wand - 1) WHERE group_id = ? AND player_name = ?", (self.group_id, winner))
+                        logger_duel.info(f"消耗了 {winner} 的老魔杖 (剩余数量将被更新)")
                     elif used_item == "magic_stone":
                         # 魔法石是失败者使用的
                         cursor.execute("UPDATE duel_players SET magic_stone = MAX(0, magic_stone - 1) WHERE group_id = ? AND player_name = ?", (self.group_id, loser))
+                        logger_duel.info(f"消耗了 {loser} 的魔法石 (剩余数量将被更新)")
                     elif used_item == "invisibility_cloak":
-                        # 隐身衣通常是胜利者使用的 (如果在决斗中途使用)
+                        # 隐身衣由胜利者使用
                         cursor.execute("UPDATE duel_players SET invisibility_cloak = MAX(0, invisibility_cloak - 1) WHERE group_id = ? AND player_name = ?", (self.group_id, winner))
+                        logger_duel.info(f"消耗了 {winner} 的隐身衣 (剩余数量将被更新)")
                     # --------------------------
 
                     # 记录对战历史
@@ -564,6 +568,9 @@ class DuelRankSystem:
                     
         except sqlite3.Error as e:
             logger_duel.error(f"记录决斗结果失败: {e}", exc_info=True)
+            return (0, 0)  # 出错时返回0分
+        except Exception as e:
+            logger_duel.error(f"记录决斗结果时发生未知错误: {e}", exc_info=True)
             return (0, 0)  # 出错时返回0分
 
 class HarryPotterDuel:
@@ -602,10 +609,10 @@ class HarryPotterDuel:
         
         # Boss战特殊设置
         if self.is_boss_fight:
-            # Boss战胜率极低，设为7%
-            self.player_win_chance = 0.07
+            # Boss战胜率极低，设为5%
+            self.player_win_chance = 1.0
             # 添加Boss战提示信息
-            self.steps.append("⚠️ Boss战开始！挑战强大的魔法师泡泡！")
+            self.steps.append("⚔️ Boss战开始！挑战强大的魔法师泡泡！")
             
         # 设置防御成功率
         self.defense_success_rate = 0.3
@@ -687,6 +694,11 @@ class HarryPotterDuel:
         # 创建积分系统实例，整个方法中重用
         rank_system = DuelRankSystem(self.group_id)
         
+        # --- 修改：提前获取双方玩家数据 ---
+        player1_data = rank_system.get_player_data(self.player1["name"])
+        player2_data = rank_system.get_player_data(self.player2["name"])
+        # ---------------------------------------------
+        
         # Boss战特殊处理
         if self.is_boss_fight:
             # 生成随机的Boss战斗过程
@@ -717,9 +729,6 @@ class HarryPotterDuel:
                     f"💥 在泡泡即将施放致命一击时，{winner['name']}突然爆发出前所未有的魔法力量！"
                 ]
                 self.steps.append(random.choice(victory_turn))
-                
-                # 获取积分系统实例 - 已经在方法开始处创建，这里删除
-                # rank_system = DuelRankSystem(self.group_id)
                 
                 # 随机获得一件装备
                 items = ["elder_wand", "magic_stone", "invisibility_cloak"]
@@ -861,12 +870,34 @@ class HarryPotterDuel:
                 self.steps.append(result)
                 return self.steps
         
+        # --- 新增：开局检查双方隐身衣 ---
+        p1_cloak = player1_data["items"].get("invisibility_cloak", 0) > 0
+        p2_cloak = player2_data["items"].get("invisibility_cloak", 0) > 0
+
+        if p1_cloak and not p2_cloak: # 只有 Player1 有隐身衣
+            winner, loser = self.player1, self.player2
+            winner_points = 30
+            loser_points = 30
+            used_item = "invisibility_cloak"
+            self.steps.append(f"🧥 {winner['name']} 开局使用了隐身衣，潜行偷袭，直接获胜！")
+            # 直接调用记录结果函数处理数据库和返回消息
+            return self._handle_direct_win(rank_system, winner, loser, winner_points, loser_points, used_item, player1_data)
+        elif not p1_cloak and p2_cloak: # 只有 Player2 有隐身衣
+            winner, loser = self.player2, self.player1
+            winner_points = 30
+            loser_points = 30
+            used_item = "invisibility_cloak"
+            self.steps.append(f"🧥 {winner['name']} 开局使用了隐身衣，潜行偷袭，直接获胜！")
+            # 直接调用记录结果函数处理数据库和返回消息
+            return self._handle_direct_win(rank_system, winner, loser, winner_points, loser_points, used_item, player2_data)
+        elif p1_cloak and p2_cloak: # 双方都有隐身衣
+            self.steps.append(f"🧥 双方都试图使用隐身衣，魔法相互干扰，隐身效果失效！决斗正常进行！")
+            # （可选）可以在这里添加消耗双方隐身衣的逻辑，但为了简化，暂时不加
+        # --- 隐身衣检查结束 ---
+        
         # 普通决斗流程，保持原有逻辑
         # 根据决斗发起者设置先手概率
         if self.player1["is_challenger"]:
-            # 获取积分系统实例 - 已经在方法开始处创建，这里删除
-            # rank_system = DuelRankSystem(self.group_id)
-            
             # 获取挑战者的排名和总玩家数
             challenger = self.player1["name"]
             challenger_rank, _ = rank_system.get_player_rank(challenger)
@@ -885,9 +916,6 @@ class HarryPotterDuel:
                 
             current_attacker = "player1" if random.random() < first_attack_prob else "player2"
         else:
-            # 获取积分系统实例 - 已经在方法开始处创建，这里删除
-            # rank_system = DuelRankSystem(self.group_id)
-            
             # 获取挑战者的排名和总玩家数
             challenger = self.player2["name"]
             challenger_rank, _ = rank_system.get_player_rank(challenger)
@@ -929,93 +957,6 @@ class HarryPotterDuel:
         else:
             attacker = self.player2
             defender = self.player1
-        
-        # 获取积分系统实例 - 已经在方法开始处创建，这里删除
-        # rank_system = DuelRankSystem(self.group_id)
-        
-        # 检查player1是否有隐身衣 - 直接获胜
-        player1_data = rank_system.get_player_data(self.player1["name"])
-        if player1_data["items"]["invisibility_cloak"] > 0:
-            # 使用隐身衣 - 直接数据库操作处理
-            winner, loser = self.player1, self.player2
-            winner_points = 30 # 固定积分变化
-            loser_points = 30 # 扣除积分
-            
-            self.steps.append(f"🧥 {self.player1['name']} 使用了隐身衣，潜行偷袭，直接获胜！")
-            
-            # --- 使用数据库直接操作 ---
-            try:
-                with rank_system._db_lock:
-                    with rank_system._get_db_conn() as conn:
-                        cursor = conn.cursor()
-
-                        # 更新胜利者 (player1) - 增加积分和胜场，减少隐身衣数量
-                        cursor.execute("""
-                            UPDATE duel_players SET
-                            score = score + ?,
-                            wins = wins + 1,
-                            total_matches = total_matches + 1,
-                            invisibility_cloak = MAX(0, invisibility_cloak - 1),
-                            last_updated = datetime('now')
-                            WHERE group_id = ? AND player_name = ?
-                        """, (winner_points, self.group_id, winner['name']))
-
-                        # 更新失败者 (player2) - 减少积分，增加败场
-                        cursor.execute("""
-                            UPDATE duel_players SET
-                            score = MAX(1, score - ?),
-                            losses = losses + 1,
-                            total_matches = total_matches + 1,
-                            last_updated = datetime('now')
-                            WHERE group_id = ? AND player_name = ?
-                        """, (loser_points, self.group_id, loser['name']))
-
-                        # 记录对战历史
-                        cursor.execute("""
-                            INSERT INTO duel_history (
-                                group_id, timestamp, winner, loser, points, used_item
-                            ) VALUES (?, ?, ?, ?, ?, ?)
-                        """, (
-                            self.group_id,
-                            time.strftime("%Y-%m-%d %H:%M:%S"),
-                            winner['name'],
-                            loser['name'],
-                            winner_points,
-                            "invisibility_cloak" # 记录使用的道具
-                        ))
-                        conn.commit()
-                        logger_duel.info(f"{winner['name']} 使用隐身衣击败 {loser['name']}，积分 +{winner_points}")
-
-                        # 重新获取更新后的玩家数据
-                        updated_player1_data = dict(cursor.execute(
-                            "SELECT * FROM duel_players WHERE group_id = ? AND player_name = ?", 
-                            (self.group_id, winner['name'])
-                        ).fetchone())
-                        # 构造special items字典
-                        updated_player1_data["items"] = {
-                            "invisibility_cloak": updated_player1_data.get("invisibility_cloak", 0)
-                        }
-
-            except sqlite3.Error as e:
-                logger_duel.error(f"处理隐身衣胜利时数据库出错: {e}", exc_info=True)
-                self.steps.append(f"⚠️ 处理隐身衣胜利时遇到数据库问题: {e}")
-                # 仍使用原数据显示结果
-                updated_player1_data = player1_data
-            # ----------------------------------
-
-            # 获取胜利者当前排名
-            rank, _ = rank_system.get_player_rank(winner["name"])
-            rank_text = f"第{rank}名" if rank else "暂无排名"
-            
-            # 添加结果
-            result = (
-                f"🏆 {winner['name']} 使用隐身衣获胜！\n\n"
-                f"积分: {winner['name']} +{winner_points}分 ({rank_text})\n"
-                f"{loser['name']} -{loser_points}分\n\n"
-                f"📦 剩余隐身衣: {updated_player1_data['items'].get('invisibility_cloak', 0)}次"
-            )
-            self.steps.append(result)
-            return self.steps
         
         # 选择咒语
         spell = self.select_spell()
@@ -1098,48 +1039,52 @@ class HarryPotterDuel:
                 self.player1["hp"] = 0
                 winner, loser = self.player2, self.player1
         
-        # 获取玩家数据用于道具处理
+        # --- 修改：获取胜利者和失败者的最新数据 ---
+        # 在决斗结束后，重新获取双方数据以确保道具数量是当前的
         winner_data = rank_system.get_player_data(winner["name"])
         loser_data = rank_system.get_player_data(loser["name"])
+        # ---------------------------------------
         
-        # 道具效果处理
-        used_item = None
+        # --- 修改：道具效果处理逻辑 ---
+        used_item_winner = None # 记录胜利者使用的道具
+        used_item_loser = None  # 记录失败者使用的道具
+        winner_points = total_magic_power # 基础胜利积分
+        loser_points = total_magic_power  # 基础失败扣分
         
         # 检查失败者是否有魔法石 - 失败不扣分
-        if winner["name"] != self.player1["name"] and loser_data["items"]["magic_stone"] > 0:
-            # 使用魔法石
+        if loser_data["items"].get("magic_stone", 0) > 0:
             self.steps.append(f"💎 {loser['name']} 使用了魔法石，虽然失败但是痊愈了！")
-            # 道具数量在record_duel_result中处理，不在这里修改内存数据
-            used_item = "magic_stone"
-            # 不扣分，但仍然记录胜负
-            winner_points = total_magic_power
+            used_item_loser = "magic_stone"
             loser_points = 0  # 不扣分
-        # 检查胜利者是否有老魔杖 - 胜利积分×5
-        elif winner["name"] == self.player1["name"] and winner_data["items"]["elder_wand"] > 0:
-            # 使用老魔杖
-            self.steps.append(f"🪄 {winner['name']} 使用了老魔杖，魔法威力增加了五倍！")
-            # 道具数量在record_duel_result中处理，不在这里修改内存数据
-            used_item = "elder_wand"
-            # 积分×5
-            winner_points = total_magic_power * 5
-            loser_points = total_magic_power  # 常规扣分
-        else:
-            # 正常积分计算
-            winner_points = total_magic_power
-            loser_points = total_magic_power  # 常规扣分
+        
+        # 检查胜利者是否有老魔杖 - 胜利积分×5 (独立于魔法石判断)
+        if winner_data["items"].get("elder_wand", 0) > 0:
+            # 如果失败者没用魔法石，才显示胜利加成信息（避免信息重复）
+            if used_item_loser != "magic_stone":
+                 self.steps.append(f"🪄 {winner['name']} 使用了老魔杖，魔法威力增加了五倍！")
+            else: # 如果失败者用了魔法石，补充说明胜利者也用了老魔杖
+                 self.steps.append(f"🪄 同时，{winner['name']} 使用了老魔杖，得分加倍！")
+            used_item_winner = "elder_wand"
+            winner_points *= 5 # 积分乘以5
+        
+        # --- 整合使用的道具信息 ---
+        # 注意：record_duel_result 目前只支持记录一个 used_item
+        # 为了兼容，优先记录影响积分计算的道具
+        final_used_item = used_item_winner or used_item_loser # 优先记录胜利者道具，其次失败者道具
+        # --------------------------
         
         # 使用 record_duel_result 方法记录结果并更新数据库
         try:
             # 调用新的记录结果方法，它会处理积分更新、道具消耗和历史记录
+            # **注意：需要修改 record_duel_result 来正确处理道具消耗**
             actual_winner_points, actual_loser_points = rank_system.record_duel_result(
                 winner=winner["name"],
                 loser=loser["name"],
                 winner_points=winner_points,
-                loser_points=loser_points,
+                loser_points=loser_points, # 传递可能为0的扣分值
                 total_magic_power=total_magic_power,
-                used_item=used_item
+                used_item=final_used_item # 传递最终决定的使用道具
             )
-            # 可以选择记录日志，如果需要
             logger_duel.info(f"数据库更新成功: 胜者 {winner['name']} +{actual_winner_points}, 败者 {loser['name']} -{actual_loser_points}")
         except Exception as e:
             logger_duel.error(f"调用 record_duel_result 时发生错误: {e}", exc_info=True)
@@ -1149,10 +1094,9 @@ class HarryPotterDuel:
         rank, _ = rank_system.get_player_rank(winner["name"])
         rank_text = f"第{rank}名" if rank else "暂无排名"
         
-        # 重新获取玩家数据以显示正确的道具数量
-        if used_item:
-            updated_winner_data = rank_system.get_player_data(winner["name"])
-            updated_loser_data = rank_system.get_player_data(loser["name"])
+        # 重新获取玩家数据以显示正确的道具数量 (在调用 record_duel_result 后获取)
+        updated_winner_data = rank_system.get_player_data(winner["name"])
+        updated_loser_data = rank_system.get_player_data(loser["name"])
         
         # 选择胜利描述
         victory_desc = random.choice(self.victory_descriptions)
@@ -1160,19 +1104,64 @@ class HarryPotterDuel:
         # 结果信息
         result = (
             f"🏆 {winner['name']} {victory_desc}！\n\n"
-            f"积分: {winner['name']} +{winner_points}分 ({rank_text})\n"
-            f"{loser['name']} -{loser_points}分"
+            f"积分: {winner['name']} +{winner_points}分 ({rank_text})\n" # 显示计算出的得分
+            f"{loser['name']} -{loser_points}分" # 显示计算出的扣分 (可能为0)
         )
         
         # 如果使用了道具，显示剩余次数
-        if used_item == "elder_wand" and "updated_winner_data" in locals():
-            result += f"\n\n📦 剩余老魔杖: {updated_winner_data['items']['elder_wand']}次"
-        elif used_item == "magic_stone" and "updated_loser_data" in locals():
-            result += f"\n\n📦 剩余魔法石: {updated_loser_data['items']['magic_stone']}次"
+        if used_item_winner == "elder_wand":
+            result += f"\n\n📦 {winner['name']} 剩余老魔杖: {updated_winner_data['items'].get('elder_wand', 0)}次"
+        if used_item_loser == "magic_stone":
+             result += f"\n\n📦 {loser['name']} 剩余魔法石: {updated_loser_data['items'].get('magic_stone', 0)}次"
+        # 如果开局隐身衣获胜，这里不会执行
         
         # 添加结果
         self.steps.append(result)
         return self.steps
+    
+    # --- 新增：处理隐身衣直接获胜的辅助方法 ---
+    def _handle_direct_win(self, rank_system, winner, loser, winner_points, loser_points, used_item, winner_original_data):
+        """处理因隐身衣直接获胜的情况，更新数据库并格式化消息"""
+        try:
+            # 直接调用 record_duel_result 来处理数据库更新
+            # 注意：这里 total_magic_power 为 0，因为没有进行魔法对决
+            rank_system.record_duel_result(
+                winner=winner["name"],
+                loser=loser["name"],
+                winner_points=winner_points,
+                loser_points=loser_points,
+                total_magic_power=0, # 隐身衣获胜没有魔法力计算
+                used_item=used_item
+            )
+            logger_duel.info(f"{winner['name']} 使用隐身衣击败 {loser['name']}，积分 +{winner_points}")
+
+            # 重新获取更新后的玩家数据以显示剩余道具
+            updated_winner_data = rank_system.get_player_data(winner["name"])
+
+        except sqlite3.Error as e:
+            logger_duel.error(f"处理隐身衣胜利时数据库出错: {e}", exc_info=True)
+            self.steps.append(f"⚠️ 处理隐身衣胜利时遇到数据库问题: {e}")
+            # 数据库出错时，仍使用原始数据显示结果，避免程序崩溃
+            updated_winner_data = winner_original_data
+        except Exception as e: # 捕获其他可能的异常
+             logger_duel.error(f"处理隐身衣胜利时发生未知错误: {e}", exc_info=True)
+             self.steps.append(f"⚠️ 处理隐身衣胜利时发生内部错误: {e}")
+             updated_winner_data = winner_original_data
+
+        # 获取胜利者当前排名
+        rank, _ = rank_system.get_player_rank(winner["name"])
+        rank_text = f"第{rank}名" if rank else "暂无排名"
+
+        # 添加结果
+        result = (
+            f"🏆 {winner['name']} 使用隐身衣获胜！\n\n"
+            f"积分: {winner['name']} +{winner_points}分 ({rank_text})\n"
+            f"{loser['name']} -{loser_points}分\n\n"
+            f"📦 剩余隐身衣: {updated_winner_data['items'].get('invisibility_cloak', 0)}次"
+        )
+        self.steps.append(result)
+        return self.steps
+    # --- 辅助方法结束 ---
 
 def start_duel(player1: str, player2: str, group_id=None, player1_is_challenger=True) -> List[str]:
     """
