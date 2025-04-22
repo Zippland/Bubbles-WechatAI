@@ -162,18 +162,18 @@ COMMANDS = [
     Command(
         name="reminder",
         pattern=re.compile(r"^(提醒\s*.+)$", re.IGNORECASE | re.DOTALL), # 匹配"提醒"开头（可无空格），捕获包括"提醒"在内的完整内容
-        scope="private",    # 仅限私聊
-        need_at=False,      # 不需要 @ 机器人
+        scope="both",    # 支持群聊和私聊
+        need_at=True,    # 在群聊中需要@机器人
         priority=35,        # 优先级适中，在基础命令后，复杂功能或闲聊前
         handler=handle_reminder,
-        description="设置一个私人提醒 (例如：提醒 明天下午3点 开会 或 提醒我早上七点起床)"
+        description="设置一个提醒 (例如：提醒 明天下午3点 开会 或 提醒我早上七点起床)"
     ),
     
     Command(
         name="list_reminders",
         pattern=re.compile(r"^(查看提醒|我的提醒|提醒列表)$", re.IGNORECASE),
-        scope="private",
-        need_at=False,
+        scope="both",    # 支持群聊和私聊
+        need_at=True,    # 在群聊中需要@机器人
         priority=36, # 优先级略低于设置提醒
         handler=handle_list_reminders,
         description="查看您设置的所有提醒"
@@ -183,8 +183,8 @@ COMMANDS = [
         name="delete_reminder",
         # 匹配 "删除提醒 " 后跟任意内容，用于删除特定提醒
         pattern=re.compile(r"^(删除提醒|取消提醒)\s+(.+)$", re.IGNORECASE | re.DOTALL),
-        scope="private",
-        need_at=False,
+        scope="both",    # 支持群聊和私聊
+        need_at=True,    # 在群聊中需要@机器人
         priority=37,
         handler=handle_delete_reminder,
         description="删除指定的提醒 (例如：删除提醒 ID:xxxxxx)"

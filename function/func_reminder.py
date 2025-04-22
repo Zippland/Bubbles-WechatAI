@@ -7,6 +7,7 @@ import schedule
 from datetime import datetime, timedelta
 import logging
 import threading
+from typing import Optional, Dict, Tuple  # 添加类型提示导入
 
 # 获取 Logger 实例
 logger = logging.getLogger("ReminderManager")
@@ -52,12 +53,14 @@ class ReminderManager:
             content TEXT NOT NULL,
             created_at TEXT NOT NULL,
             last_triggered_at TEXT,
-            weekday INTEGER
+            weekday INTEGER,
+            roomid TEXT
         );
         """
         # 创建索引的 SQL
         index_sql_wxid = "CREATE INDEX IF NOT EXISTS idx_reminders_wxid ON reminders (wxid);"
         index_sql_type = "CREATE INDEX IF NOT EXISTS idx_reminders_type ON reminders (type);"
+        index_sql_roomid = "CREATE INDEX IF NOT EXISTS idx_reminders_roomid ON reminders (roomid);"
 
         try:
             with self._db_lock: # 加锁保护数据库连接和操作
@@ -68,28 +71,39 @@ class ReminderManager:
                     
                     # 2. 尝试添加新列（如果表已存在且没有该列）
                     try:
-                        cursor.execute("ALTER TABLE reminders ADD COLUMN weekday INTEGER;")
-                        logger.info("成功添加 'weekday' 列到 'reminders' 表。")
+                        # 检查列是否存在
+                        cursor.execute("PRAGMA table_info(reminders);")
+                        columns = [col['name'] for col in cursor.fetchall()]
+                        
+                        # 添加 weekday 列（如果不存在）
+                        if 'weekday' not in columns:
+                            cursor.execute("ALTER TABLE reminders ADD COLUMN weekday INTEGER;")
+                            logger.info("成功添加 'weekday' 列到 'reminders' 表。")
+                            
+                        # 添加 roomid 列（如果不存在）
+                        if 'roomid' not in columns:
+                            cursor.execute("ALTER TABLE reminders ADD COLUMN roomid TEXT;")
+                            logger.info("成功添加 'roomid' 列到 'reminders' 表。")
                     except sqlite3.OperationalError as e:
-                        # 如果列已存在，会报 "duplicate column name" 错误，可以忽略
-                        if "duplicate column name" not in str(e):
-                            logger.warning(f"尝试添加 'weekday' 列时发生非预期错误: {e}")
-                            # 不再抛出错误，继续执行
+                        # 如果列已存在，会报错误，可以忽略
+                        logger.warning(f"尝试添加列时发生错误: {e}")
                     
                     # 3. 创建索引
                     cursor.execute(index_sql_wxid)
                     cursor.execute(index_sql_type)
+                    cursor.execute(index_sql_roomid)
                     conn.commit()
             logger.info("数据库表 'reminders' 检查/创建 完成。")
         except sqlite3.Error as e:
             logger.error(f"创建/检查数据库表 'reminders' 失败: {e}", exc_info=True)
 
     # --- 对外接口 ---
-    def add_reminder(self, wxid: str, data: dict) -> tuple[bool, str]:
+    def add_reminder(self, wxid: str, data: dict, roomid: Optional[str] = None) -> Tuple[bool, str]:
         """
         将解析后的提醒数据添加到数据库。
         :param wxid: 用户的微信 ID。
         :param data: 包含 type, time, content 的字典。
+        :param roomid: 群聊ID，如果在群聊中设置提醒则不为空
         :return: (是否成功, 提醒 ID 或 错误信息)
         """
         reminder_id = str(uuid.uuid4())
@@ -122,8 +136,8 @@ class ReminderManager:
 
         # 准备插入数据库
         sql = """
-        INSERT INTO reminders (id, wxid, type, time_str, content, created_at, last_triggered_at, weekday)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO reminders (id, wxid, type, time_str, content, created_at, last_triggered_at, weekday, roomid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             reminder_id,
@@ -133,7 +147,8 @@ class ReminderManager:
             data["content"],
             created_at_iso,
             None, # last_triggered_at 初始为 NULL
-            weekday_val # weekday 字段
+            weekday_val, # weekday 字段
+            roomid  # 新增：roomid 参数
         )
 
         try:
@@ -142,7 +157,9 @@ class ReminderManager:
                     cursor = conn.cursor()
                     cursor.execute(sql, params)
                     conn.commit()
-            logger.info(f"成功添加提醒 {reminder_id} for {wxid} 到数据库。")
+            # 记录日志时包含群聊信息
+            log_target = f"用户 {wxid}" + (f" 在群聊 {roomid}" if roomid else "")
+            logger.info(f"成功添加提醒 {reminder_id} for {log_target} 到数据库。")
             return True, reminder_id
         except sqlite3.IntegrityError as e: # 例如，如果 UUID 冲突 (极不可能)
             logger.error(f"添加提醒失败 (数据冲突): {e}", exc_info=True)
@@ -169,21 +186,21 @@ class ReminderManager:
 
                     # 1. 查询到期的一次性提醒
                     sql_once = """
-                    SELECT id, wxid, content FROM reminders
+                    SELECT id, wxid, content, roomid FROM reminders
                     WHERE type = 'once' AND time_str <= ?
                     """
                     cursor.execute(sql_once, (now.strftime("%Y-%m-%d %H:%M"),))
                     due_once_reminders = cursor.fetchall()
 
                     for reminder in due_once_reminders:
-                        self._send_reminder(reminder["wxid"], reminder["content"], reminder["id"])
+                        self._send_reminder(reminder["wxid"], reminder["content"], reminder["id"], reminder["roomid"])
                         reminders_to_delete.append(reminder["id"])
                         logger.info(f"一次性提醒 {reminder['id']} 已触发并标记删除。")
 
                     # 2. 查询到期的每日提醒
                     # a. 获取当前时间 HH:MM
                     # b. 查询所有 daily 提醒
-                    sql_daily_all = "SELECT id, wxid, content, time_str, last_triggered_at FROM reminders WHERE type = 'daily'"
+                    sql_daily_all = "SELECT id, wxid, content, time_str, last_triggered_at, roomid FROM reminders WHERE type = 'daily'"
                     cursor.execute(sql_daily_all)
                     all_daily_reminders = cursor.fetchall()
 
@@ -203,13 +220,13 @@ class ReminderManager:
 
                             # 如果从未触发过，或者上次触发是在今天的触发时间点之前，则应该触发
                             if last_triggered_dt is None or last_triggered_dt < today_trigger_dt:
-                                self._send_reminder(reminder["wxid"], reminder["content"], reminder["id"])
+                                self._send_reminder(reminder["wxid"], reminder["content"], reminder["id"], reminder["roomid"])
                                 reminders_to_update.append(reminder["id"])
                                 logger.info(f"每日提醒 {reminder['id']} 已触发并标记更新触发时间。")
                                 
                     # 3. 查询并处理到期的 'weekly' 提醒
                     sql_weekly = """
-                    SELECT id, wxid, content, time_str, last_triggered_at FROM reminders
+                    SELECT id, wxid, content, time_str, last_triggered_at, roomid FROM reminders
                     WHERE type = 'weekly' AND weekday = ? AND time_str <= ?
                     """
                     cursor.execute(sql_weekly, (current_weekday, current_hm))
@@ -229,7 +246,7 @@ class ReminderManager:
 
                         # 如果今天是设定的星期几，时间已到，且今天还未触发过
                         if last_triggered_dt is None or last_triggered_dt < today_trigger_dt:
-                            self._send_reminder(reminder["wxid"], reminder["content"], reminder["id"])
+                            self._send_reminder(reminder["wxid"], reminder["content"], reminder["id"], reminder["roomid"])
                             reminders_to_update.append(reminder["id"]) # 每周提醒也需要更新触发时间
                             logger.info(f"每周提醒 {reminder['id']} (周{current_weekday+1}) 已触发并标记更新触发时间。")
 
@@ -255,19 +272,31 @@ class ReminderManager:
             logger.error(f"检查并触发提醒时发生意外错误: {e}", exc_info=True)
 
 
-    def _send_reminder(self, wxid: str, content: str, reminder_id: str):
-        """安全地发送提醒消息"""
+    def _send_reminder(self, wxid: str, content: str, reminder_id: str, roomid: Optional[str] = None):
+        """
+        安全地发送提醒消息。
+        根据roomid是否存在决定发送方式：
+        - 如果roomid存在，则发送到群聊并@用户
+        - 如果roomid不存在，则发送私聊消息
+        """
         try:
             message = f"⏰ 提醒：{content}"
-            # 调用 Robot 实例的发送方法
-            self.robot.sendTextMsg(message, wxid)
-            logger.info(f"已尝试发送提醒 {reminder_id} 给 {wxid}")
+            
+            if roomid:
+                # 群聊提醒: 发送到群聊并@设置提醒的用户
+                self.robot.sendTextMsg(message, roomid, wxid)
+                logger.info(f"已尝试发送群聊提醒 {reminder_id} 到群 {roomid} @ 用户 {wxid}")
+            else:
+                # 私聊提醒: 直接发送给用户
+                self.robot.sendTextMsg(message, wxid)
+                logger.info(f"已尝试发送私聊提醒 {reminder_id} 给用户 {wxid}")
         except Exception as e:
-            logger.error(f"发送提醒 {reminder_id} 给 {wxid} 失败: {e}", exc_info=True)
+            target = f"群 {roomid} @ 用户 {wxid}" if roomid else f"用户 {wxid}"
+            logger.error(f"发送提醒 {reminder_id} 给 {target} 失败: {e}", exc_info=True)
 
     # --- 查看和删除提醒功能 ---
     def list_reminders(self, wxid: str) -> list:
-        """列出用户的所有提醒，按类型和时间排序"""
+        """列出用户的所有提醒（包括私聊和群聊中设置的），按类型和时间排序"""
         reminders = []
         try:
             with self._db_lock:
@@ -275,7 +304,7 @@ class ReminderManager:
                     cursor = conn.cursor()
                     # 按类型(once->daily->weekly)，再按时间排序
                     sql = """
-                    SELECT id, type, time_str, content, created_at, last_triggered_at, weekday
+                    SELECT id, type, time_str, content, created_at, last_triggered_at, weekday, roomid
                     FROM reminders
                     WHERE wxid = ?
                     ORDER BY
@@ -296,9 +325,10 @@ class ReminderManager:
             logger.error(f"为用户 {wxid} 列出提醒时数据库出错: {e}", exc_info=True)
             return [] # 出错返回空列表
 
-    def delete_reminder(self, wxid: str, reminder_id: str) -> tuple[bool, str]:
+    def delete_reminder(self, wxid: str, reminder_id: str) -> Tuple[bool, str]:
         """
         删除用户的特定提醒。
+        用户可以删除自己的任何提醒，无论是在私聊还是群聊中设置的。
         :return: (是否成功, 消息)
         """
         try:
@@ -306,18 +336,24 @@ class ReminderManager:
                 with self._get_db_conn() as conn:
                     cursor = conn.cursor()
                     # 确保用户只能删除自己的提醒
-                    sql_check = "SELECT COUNT(*) FROM reminders WHERE id = ? AND wxid = ?"
+                    sql_check = "SELECT COUNT(*), roomid FROM reminders WHERE id = ? AND wxid = ? GROUP BY roomid"
                     cursor.execute(sql_check, (reminder_id, wxid))
-                    count = cursor.fetchone()[0]
-
-                    if count == 0:
+                    result = cursor.fetchone()
+                    
+                    if not result or result[0] == 0:
                         logger.warning(f"用户 {wxid} 尝试删除不存在或不属于自己的提醒 {reminder_id}")
                         return False, f"未找到 ID 为 {reminder_id[:6]}... 的提醒，或该提醒不属于您。"
+                    
+                    # 获取roomid用于日志记录
+                    roomid = result[1] if len(result) > 1 else None
 
                     sql_delete = "DELETE FROM reminders WHERE id = ? AND wxid = ?"
                     cursor.execute(sql_delete, (reminder_id, wxid))
                     conn.commit()
-                    logger.info(f"用户 {wxid} 成功删除了提醒 {reminder_id}")
+                    
+                    # 在日志中记录位置信息
+                    location_info = f"在群聊 {roomid}" if roomid else "在私聊"
+                    logger.info(f"用户 {wxid} 成功删除了{location_info}设置的提醒 {reminder_id}")
                     return True, f"已成功删除提醒 (ID: {reminder_id[:6]}...)"
 
         except sqlite3.Error as e:
@@ -325,4 +361,38 @@ class ReminderManager:
             return False, f"删除提醒时发生数据库错误: {e}"
         except Exception as e:
             logger.error(f"用户 {wxid} 删除提醒 {reminder_id} 时发生意外错误: {e}", exc_info=True)
-            return False, f"删除提醒时发生未知错误: {e}" 
+            return False, f"删除提醒时发生未知错误: {e}"
+
+    def delete_all_reminders(self, wxid: str) -> Tuple[bool, str, int]:
+        """
+        删除用户的所有提醒（包括群聊和私聊中设置的）。
+        :param wxid: 用户的微信ID
+        :return: (是否成功, 消息, 删除的提醒数量)
+        """
+        try:
+            with self._db_lock:
+                with self._get_db_conn() as conn:
+                    cursor = conn.cursor()
+                    
+                    # 先查询用户有多少条提醒
+                    count_sql = "SELECT COUNT(*) FROM reminders WHERE wxid = ?"
+                    cursor.execute(count_sql, (wxid,))
+                    count = cursor.fetchone()[0]
+                    
+                    if count == 0:
+                        return False, "您当前没有任何提醒。", 0
+                    
+                    # 删除用户的所有提醒
+                    delete_sql = "DELETE FROM reminders WHERE wxid = ?"
+                    cursor.execute(delete_sql, (wxid,))
+                    conn.commit()
+                    
+                    logger.info(f"用户 {wxid} 删除了其所有 {count} 条提醒")
+                    return True, f"已成功删除您的所有提醒（共 {count} 条）。", count
+                    
+        except sqlite3.Error as e:
+            logger.error(f"用户 {wxid} 删除所有提醒时数据库出错: {e}", exc_info=True)
+            return False, f"删除提醒时发生数据库错误: {e}", 0
+        except Exception as e:
+            logger.error(f"用户 {wxid} 删除所有提醒时发生意外错误: {e}", exc_info=True)
+            return False, f"删除提醒时发生未知错误: {e}", 0 

@@ -31,6 +31,12 @@ def handle_help(ctx: 'MessageContext', match: Optional[Match]) -> bool:
         "- 我的装备/查看装备",
         "- 改名 [旧名] [新名]",
         "",
+        "【提醒】",
+        "- 提醒xxxxx：支持一次性、每日、每周",
+        "- 查看提醒/我的提醒/提醒列表",
+        "- 删除提醒 [ID]",
+        "- 删除提醒 all",
+        "",
         "【成语】",
         "- #成语：接龙",
         "- ?成语：查询成语释义",
@@ -797,15 +803,13 @@ def handle_perplexity_ask(ctx: 'MessageContext', match: Optional[Match]) -> bool
     return was_handled 
 
 def handle_reminder(ctx: 'MessageContext', match: Optional[Match]) -> bool:
-    """处理来自私聊的 '提醒' 命令"""
-    # 1. 检查是否为私聊
-    if ctx.is_group:
-        return False # 此命令仅限私聊
-
+    """处理来自私聊或群聊的 '提醒' 命令"""
     # 2. 获取用户输入的提醒内容（现在包含"提醒"字样）
     raw_text = match.group(1).strip()
     if not raw_text or raw_text == "提醒":
-        ctx.send_text("请告诉我需要提醒什么内容和时间呀~ (例如：提醒 明天下午3点 开会 或 提醒我早上七点起床)")
+        # 在群聊中@用户回复
+        at_list = ctx.msg.sender if ctx.is_group else ""
+        ctx.send_text("请告诉我需要提醒什么内容和时间呀~ (例如：提醒 明天下午3点 开会 或 提醒我早上七点起床)", at_list)
         return True
 
     # 3. 构造给 AI 的 Prompt
@@ -830,69 +834,84 @@ def handle_reminder(ctx: 'MessageContext', match: Optional[Match]) -> bool:
     current_dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     formatted_prompt = sys_prompt.format(current_datetime=current_dt_str)
 
-    # 4. 调用 AI 模型进行解析
+    # 4. 调用AI模型并解析
     q_for_ai = f"请解析以下用户提醒:\n{raw_text}"
-    ai_response_text = "" # 初始化为空字符串
+    data = None
     try:
+        # 检查AI模型
         if not hasattr(ctx, 'chat') or not ctx.chat:
-             raise ValueError("当前上下文中没有可用的 AI 模型")
-
-        ai_response_text = ctx.chat.get_answer(q_for_ai, ctx.get_receiver(), system_prompt_override=formatted_prompt)
-
-        # 5. 解析 AI 返回的 JSON
-        #    使用正则表达式提取 JSON 部分，增加鲁棒性
-        json_match = re.search(r'\{.*\}', ai_response_text, re.DOTALL)
-        if not json_match:
-            # 尝试直接解析，以防 AI 精确返回 JSON
-            try:
-                data = json.loads(ai_response_text)
-            except json.JSONDecodeError:
-                 raise ValueError(f"AI 未返回有效的 JSON 结构。原始回复: {ai_response_text[:200]}...") # 增加原始回复片段
+            raise ValueError("当前上下文中没有可用的AI模型")
+            
+        # 获取AI回答
+        at_list = ctx.msg.sender if ctx.is_group else ""
+        ai_response = ctx.chat.get_answer(q_for_ai, ctx.get_receiver(), system_prompt_override=formatted_prompt)
+        
+        # 尝试提取和解析JSON
+        json_str = None
+        json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
         else:
-             try:
-                data = json.loads(json_match.group(0))
-             except json.JSONDecodeError as json_err:
-                 raise ValueError(f"提取的 JSON 结构无效: {json_err}. 原始回复: {ai_response_text[:200]}...")
-
-        # 增强校验，提供更好的错误反馈
-        # 检查内容是否过于模糊
-        if not data.get("content") or len(data["content"].strip()) < 2:
-            ctx.send_text("❌ 提醒内容似乎太短或不明确，请提供更具体的提醒内容。")
+            json_str = ai_response
+            
+        try:
+            data = json.loads(json_str)
+        except:
+            ctx.send_text("❌ 无法解析AI的回复为有效的JSON格式", at_list)
             return True
             
-        # 检查时间格式是否明确
-        if data.get("type") == "once":
+        # 验证数据
+        if not data.get("type") or not data.get("time") or not data.get("content"):
+            ctx.send_text("❌ AI返回的数据缺少必要字段(类型/时间/内容)", at_list)
+            return True
+            
+        # 验证内容
+        if len(data.get("content", "").strip()) < 2:
+            ctx.send_text("❌ 提醒内容太短，请提供更具体的提醒内容", at_list)
+            return True
+            
+        # 验证时间格式
+        if data["type"] == "once":
             try:
                 dt = datetime.strptime(data["time"], "%Y-%m-%d %H:%M")
                 if dt < datetime.now():
-                    ctx.send_text("❌ 提醒时间必须是未来的时间。请重新设置一个未来的时间点。")
+                    ctx.send_text("❌ 提醒时间必须是未来的时间", at_list)
                     return True
             except ValueError:
-                ctx.send_text("❌ 一次性提醒的时间格式不正确。请使用像“明天下午3点”这样明确的时间表述。")
+                ctx.send_text("❌ 一次性提醒的时间格式不正确", at_list)
                 return True
                 
-        # 检查 weekly 类型是否提供了 weekday
-        if data.get("type") == "weekly" and not (isinstance(data.get("weekday"), int) and 0 <= data.get("weekday") <= 6):
-            ctx.send_text("❌ 每周提醒需要明确指定是周几，例如“每周一早上9点”。")
+        # 验证周提醒
+        if data["type"] == "weekly" and not (isinstance(data.get("weekday"), int) and 0 <= data.get("weekday") <= 6):
+            ctx.send_text("❌ 每周提醒需要指定是周几(0-6)", at_list)
             return True
-
-        if ctx.logger: ctx.logger.info(f"AI 成功解析提醒，JSON: {data}")
-
+            
+        # 记录日志
+        if ctx.logger:
+            ctx.logger.info(f"成功解析提醒: {data}")
     except Exception as e:
-        error_msg = f"❌ 解析提醒时出错: {e}"
-        ctx.send_text(error_msg)
-        if ctx.logger: ctx.logger.error(error_msg, exc_info=True)
-        return True # 即使失败，命令也处理完毕
+        at_list = ctx.msg.sender if ctx.is_group else ""
+        ctx.send_text(f"❌ 处理提醒时出错: {str(e)}", at_list)
+        if ctx.logger:
+            ctx.logger.error(f"处理提醒出错: {e}", exc_info=True)
+        return True
 
     # 6. 将解析结果交给 ReminderManager 处理
     if not hasattr(ctx.robot, 'reminder_manager'):
-         ctx.send_text("❌ 内部错误：提醒管理器未初始化。")
-         if ctx.logger: ctx.logger.error("handle_reminder 无法访问 ctx.robot.reminder_manager")
-         return True
+        at_list = ctx.msg.sender if ctx.is_group else ""
+        ctx.send_text("❌ 内部错误：提醒管理器未初始化。", at_list)
+        if ctx.logger: 
+            ctx.logger.error("handle_reminder 无法访问 ctx.robot.reminder_manager")
+        return True
 
-    success, result_or_id = ctx.robot.reminder_manager.add_reminder(ctx.msg.sender, data)
+    # 根据当前环境（群聊或私聊）设置roomid参数
+    roomid = ctx.msg.roomid if ctx.is_group else None
+    success, result_or_id = ctx.robot.reminder_manager.add_reminder(ctx.msg.sender, data, roomid=roomid)
 
     # 7. 向用户反馈结果
+    # 在群聊中@用户
+    at_list = ctx.msg.sender if ctx.is_group else ""
+    
     if success:
         reminder_id = result_or_id
         # 构建更友好的回复，根据提醒类型进行定制
@@ -909,32 +928,37 @@ def handle_reminder(ctx: 'MessageContext', match: Optional[Match]) -> bool:
             if 0 <= data["weekday"] <= 6:
                 time_display = f"{weekdays[data['weekday']]} {time_display}"
         
-        reply_msg = f"✅ 好的，已为您设置{type_str}提醒 (ID: {reminder_id[:6]}):\n" \
+        # 添加设置环境提示（群聊/私聊）
+        scope_info = f"在本群" if ctx.is_group else "私聊"
+        reply_msg = f"✅ 好的，已为您{scope_info}设置{type_str}提醒 (ID: {reminder_id[:6]}):\n" \
                     f"时间: {time_display}\n" \
                     f"内容: {data.get('content', '无')}"
-        ctx.send_text(reply_msg)
+        ctx.send_text(reply_msg, at_list)
+        
+        # 尝试触发馈赠（如果在群聊中）
+        if ctx.is_group and hasattr(ctx.robot, "goblin_gift_manager"):
+            ctx.robot.goblin_gift_manager.try_trigger(ctx.msg)
     else:
         error_message = result_or_id # 此时 result_or_id 是错误信息
-        ctx.send_text(f"❌ 设置提醒失败: {error_message}")
+        ctx.send_text(f"❌ 设置提醒失败: {error_message}", at_list)
 
     return True # 命令处理流程结束
 
 def handle_list_reminders(ctx: 'MessageContext', match: Optional[Match]) -> bool:
-    """处理查看提醒命令"""
-    if ctx.is_group:
-        return False # 仅私聊
-
+    """处理查看提醒命令（支持群聊和私聊）"""
     if not hasattr(ctx.robot, 'reminder_manager'):
-        ctx.send_text("❌ 内部错误：提醒管理器未初始化。")
+        ctx.send_text("❌ 内部错误：提醒管理器未初始化。", ctx.msg.sender if ctx.is_group else "")
         return True
 
     reminders = ctx.robot.reminder_manager.list_reminders(ctx.msg.sender)
+    # 在群聊中@用户
+    at_list = ctx.msg.sender if ctx.is_group else ""
 
     if not reminders:
-        ctx.send_text("您还没有设置任何提醒。")
+        ctx.send_text("您还没有设置任何提醒。", at_list)
         return True
 
-    reply_parts = ["📝 您设置的提醒列表：\n"]
+    reply_parts = ["📝 您设置的提醒列表（包括私聊和群聊）：\n"]
     for i, r in enumerate(reminders):
         # 格式化星期几（如果存在）
         weekday_str = ""
@@ -944,35 +968,60 @@ def handle_list_reminders(ctx: 'MessageContext', match: Optional[Match]) -> bool
 
         # 格式化时间
         time_display = r['time_str']
+        # 添加设置位置标记（群聊/私聊）
+        scope_tag = ""
+        if r.get('roomid'):
+            # 尝试获取群聊名称，如果获取不到就用 roomid
+            room_name = ctx.all_contacts.get(r['roomid']) or r['roomid'][:8]
+            scope_tag = f"[群:{room_name}]"
+        else:
+            scope_tag = "[私聊]"
+            
         if r['type'] == 'once':
             # 一次性提醒显示完整日期时间
-            time_display = r['time_str'] + " (一次性)"
+            time_display = f"{scope_tag}{r['time_str']} (一次性)"
         elif r['type'] == 'daily':
-            time_display = f"每天 {r['time_str']}"
+            time_display = f"{scope_tag}每天 {r['time_str']}"
         elif r['type'] == 'weekly':
             if 0 <= r.get('weekday', -1) <= 6:
-                time_display = f"每周{weekdays[r['weekday']]} {r['time_str']}"
+                time_display = f"{scope_tag}每周{weekdays[r['weekday']]} {r['time_str']}"
             else:
-                time_display = f"每周 {r['time_str']}"
+                time_display = f"{scope_tag}每周 {r['time_str']}"
 
         reply_parts.append(
             f"{i+1}. [ID: {r['id'][:6]}] {time_display}: {r['content']}"
         )
-    ctx.send_text("\n".join(reply_parts))
+    ctx.send_text("\n".join(reply_parts), at_list)
+    
+    # 尝试触发馈赠（如果在群聊中）
+    if ctx.is_group and hasattr(ctx.robot, "goblin_gift_manager"):
+        ctx.robot.goblin_gift_manager.try_trigger(ctx.msg)
+        
     return True
 
 def handle_delete_reminder(ctx: 'MessageContext', match: Optional[Match]) -> bool:
-    """处理删除提醒命令"""
-    if ctx.is_group:
-        return False # 仅私聊
-
+    """处理删除提醒命令（支持群聊和私聊）"""
     if not hasattr(ctx.robot, 'reminder_manager'):
-        ctx.send_text("❌ 内部错误：提醒管理器未初始化。")
+        ctx.send_text("❌ 内部错误：提醒管理器未初始化。", ctx.msg.sender if ctx.is_group else "")
         return True
 
     user_input_description = match.group(2).strip() # 用户描述要删除哪个提醒
     if not user_input_description:
-        ctx.send_text("请告诉我您想删除哪个提醒（例如：删除提醒 开会的那个 / 删除提醒 ID: xxxxxx）")
+        ctx.send_text("请告诉我您想删除哪个提醒（例如：删除提醒 开会的那个 / 删除提醒 ID: xxxxxx）", ctx.msg.sender if ctx.is_group else "")
+        return True
+
+    # 在群聊中@用户
+    at_list = ctx.msg.sender if ctx.is_group else ""
+    
+    # 检查是否要删除所有提醒
+    if user_input_description.lower() == "all" or user_input_description == "所有" or user_input_description == "全部":
+        success, message, count = ctx.robot.reminder_manager.delete_all_reminders(ctx.msg.sender)
+        ctx.send_text(message, at_list)
+        
+        # 尝试触发馈赠（如果在群聊中）
+        if ctx.is_group and hasattr(ctx.robot, "goblin_gift_manager"):
+            ctx.robot.goblin_gift_manager.try_trigger(ctx.msg)
+            
         return True
 
     # 检查用户输入是否直接是 ID (简单可靠)
@@ -982,20 +1031,32 @@ def handle_delete_reminder(ctx: 'MessageContext', match: Optional[Match]) -> boo
         # 需要从数据库查找完整的 ID
         reminders = ctx.robot.reminder_manager.list_reminders(ctx.msg.sender)
         found_id = None
+        possible_matches = 0
+        
         for r in reminders:
             if r['id'].startswith(partial_id):
-                if found_id: # 如果匹配到多个，则不明确
-                    ctx.send_text(f"❌ 找到多个以 '{partial_id}' 开头的提醒ID，请提供更完整的ID。")
-                    return True
                 found_id = r['id']
+                possible_matches += 1
 
-        if found_id:
+        if possible_matches == 1:
             success, message = ctx.robot.reminder_manager.delete_reminder(ctx.msg.sender, found_id)
-            ctx.send_text(message)
+            ctx.send_text(message, at_list)
+        elif possible_matches > 1:
+            ctx.send_text(f"❌ 找到多个以 '{partial_id}' 开头的提醒ID，请提供更完整的ID。", at_list)
         else:
-            ctx.send_text(f"❌ 未找到 ID 以 '{partial_id}' 开头的提醒。您可以使用 '查看提醒' 获取完整列表和ID。")
+            ctx.send_text(f"❌ 未找到 ID 以 '{partial_id}' 开头的提醒。您可以使用 '查看提醒' 获取完整列表和ID。", at_list)
+        
+        # 尝试触发馈赠（如果在群聊中）
+        if ctx.is_group and hasattr(ctx.robot, "goblin_gift_manager"):
+            ctx.robot.goblin_gift_manager.try_trigger(ctx.msg)
+            
         return True
     
     # 如果不是ID，则提示用户先查看提醒列表
-    ctx.send_text("请先使用 '查看提醒' 命令获取您的提醒列表，然后使用 '删除提醒 ID:xxxxxx' 的格式删除特定提醒。")
+    ctx.send_text("请先使用 '查看提醒' 命令获取您的提醒列表，然后使用 '删除提醒 ID:xxxxxx' 的格式删除特定提醒。\n如果要删除所有提醒，请使用 '删除提醒 all'。", at_list)
+    
+    # 尝试触发馈赠（如果在群聊中）
+    if ctx.is_group and hasattr(ctx.robot, "goblin_gift_manager"):
+        ctx.robot.goblin_gift_manager.try_trigger(ctx.msg)
+        
     return True 
