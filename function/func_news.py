@@ -63,7 +63,14 @@ class News(object):
 
 
 if __name__ == "__main__":
+    # 设置测试用的日志配置
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    
     news = News()
     is_today, content = news.get_important_news()
-    print(f"Is Today: {is_today}")
-    print(content)
+    logger.info(f"Is Today: {is_today}")
+    logger.info(content)

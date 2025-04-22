@@ -46,8 +46,7 @@ class Ollama():
             # return res_message[2:]
             return res_message
         except Exception as e0:
-            print(e0)
-            self.LOG.error(f"发生未知错误：{str(e0)}")
+            self.LOG.error(f"发生未知错误：{str(e0)}", exc_info=True)
 
         return rsp
 
@@ -57,6 +56,12 @@ class Ollama():
 
 if __name__ == "__main__":
     from configuration import Config
+    # 设置测试用的日志配置
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+    )
+    
     config = Config().OLLAMA
     if not config:
         exit(0)
@@ -67,9 +72,10 @@ if __name__ == "__main__":
         q = input(">>> ")
         try:
             time_start = datetime.now()  # 记录开始时间
-            print(chat.get_answer(q, "wxid"))
+            logger = logging.getLogger(__name__)
+            logger.info(chat.get_answer(q, "wxid"))
             time_end = datetime.now()  # 记录结束时间
 
-            print(f"{round((time_end - time_start).total_seconds(), 2)}s")  # 计算的时间差为程序的执行时间，单位为秒/s
+            logger.info(f"{round((time_end - time_start).total_seconds(), 2)}s")  # 计算的时间差为程序的执行时间，单位为秒/s
         except Exception as e:
-            print(e)
+            logger.error(f"错误: {e}", exc_info=True)

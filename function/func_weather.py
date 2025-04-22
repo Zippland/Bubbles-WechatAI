@@ -29,5 +29,12 @@ class Weather:
             return "获取天气失败"
 
 if __name__ == "__main__":
+    # 设置测试用的日志配置
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    
     w = Weather("101010100")  # 北京
-    print(w.get_weather())  # 北京
+    logger.info(w.get_weather())  # 北京

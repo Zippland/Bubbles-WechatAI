@@ -1,9 +1,13 @@
 import re
+import logging
 from typing import List, Optional, Any, Dict, Match
 import traceback
 
 from .models import Command
 from .context import MessageContext
+
+# 获取模块级 logger
+logger = logging.getLogger(__name__)
 
 
 class CommandRouter:
@@ -20,14 +24,14 @@ class CommandRouter:
         for cmd in commands:
             scope_count[cmd.scope] += 1
         
-        print(f"命令路由器初始化成功，共加载 {len(commands)} 个命令")
-        print(f"命令作用域分布: 仅群聊 {scope_count['group']}，仅私聊 {scope_count['private']}，两者均可 {scope_count['both']}")
+        logger.info(f"命令路由器初始化成功，共加载 {len(commands)} 个命令")
+        logger.info(f"命令作用域分布: 仅群聊 {scope_count['group']}，仅私聊 {scope_count['private']}，两者均可 {scope_count['both']}")
         
         # 按优先级输出命令信息
         for i, cmd in enumerate(self.commands[:10]):  # 只输出前10个
-            print(f"{i+1}. [{cmd.priority}] {cmd.name} - {cmd.description or '无描述'}")
+            logger.info(f"{i+1}. [{cmd.priority}] {cmd.name} - {cmd.description or '无描述'}")
         if len(self.commands) > 10:
-            print(f"... 共 {len(self.commands)} 个命令")
+            logger.info(f"... 共 {len(self.commands)} 个命令")
 
     def dispatch(self, ctx: MessageContext) -> bool:
         """
@@ -93,15 +97,14 @@ class CommandRouter:
                         ctx.logger.error(f"执行命令 '{cmd.name}' 处理函数时出错: {e}")
                         ctx.logger.error(traceback.format_exc())
                     else:
-                        print(f"执行命令 '{cmd.name}' 处理函数时出错: {e}")
-                        traceback.print_exc()
+                        logger.error(f"执行命令 '{cmd.name}' 处理函数时出错: {e}", exc_info=True)
                     # 出错后继续尝试下一个命令
             except Exception as e:
                 # 匹配过程出错，记录并继续
                 if ctx.logger:
                     ctx.logger.error(f"匹配命令 '{cmd.name}' 时出错: {e}")
                 else:
-                    print(f"匹配命令 '{cmd.name}' 时出错: {e}")
+                    logger.error(f"匹配命令 '{cmd.name}' 时出错: {e}", exc_info=True)
                 continue
         
         # 所有命令都未匹配或处理失败

@@ -2,7 +2,31 @@
 # -*- coding: utf-8 -*-
 
 import signal
+import logging
+import sys  # 导入 sys 模块
+import os
 from argparse import ArgumentParser
+
+# 确保日志目录存在
+log_dir = "logs"
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# 配置 logging
+log_format = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+logging.basicConfig(
+    level=logging.INFO,  # 设置日志级别为 INFO，意味着 INFO, WARNING, ERROR, CRITICAL 都会被记录
+    format=log_format,
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8'), # 将日志写入文件
+        logging.StreamHandler(sys.stdout) # 同时输出到控制台
+    ]
+)
+
+# 如果想让某些第三方库的日志不那么详细，可以单独设置它们的日志级别
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from function.func_report_reminder import ReportReminder
 from configuration import Config
@@ -56,5 +80,13 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument('-c', type=int, default=0, 
                         help=f'选择默认模型参数序号: {ChatType.help_hint()}（可通过配置文件为不同群指定模型）')
-    args = parser.parse_args().c
-    main(args)
+    parser.add_argument('-d', '--debug', action='store_true',
+                        help='启用调试模式，输出更详细的日志信息')
+    args = parser.parse_args()
+    
+    # 如果启用了调试模式，则将日志级别设置为 DEBUG
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.info("已启用调试模式，将显示详细日志信息")
+    
+    main(args.c)

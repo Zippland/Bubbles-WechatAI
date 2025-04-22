@@ -4,6 +4,7 @@
 import json
 import os
 import random
+import logging
 from datetime import datetime
 from typing import Optional
 import httpx
@@ -11,6 +12,9 @@ from openai import OpenAI
 from ai_providers.chatglm.code_kernel import CodeKernel, execute
 from ai_providers.chatglm.tool_registry import dispatch_tool, extract_code, get_tools
 from wcferry import Wcf
+
+# 获取模块级 logger
+logger = logging.getLogger(__name__)
 
 functions = get_tools()
 
@@ -80,7 +84,7 @@ class ChatGLM:
             for _ in range(self.max_retry):
                 if response.choices[0].message.get("function_call"):
                     function_call = response.choices[0].message.function_call
-                    print(
+                    logger.debug(
                         f"Function Call Response: {function_call.to_dict_recursive()}")
 
                     function_args = json.loads(function_call.arguments)
@@ -99,7 +103,7 @@ class ChatGLM:
                     else:
                         tool_response = observation if isinstance(
                             observation, str) else str(observation)
-                    print(f"Tool Call Response: {tool_response}")
+                    logger.debug(f"Tool Call Response: {tool_response}")
 
                     params["messages"].append(response.choices[0].message)
                     params["messages"].append(
@@ -130,7 +134,7 @@ class ChatGLM:
                     else:
                         self.wcf and self.wcf.send_text("执行结果:\n" + res, wxid)
                     tool_response = '[Image]' if res_type == 'image' else res
-                    print("Received:", res_type, res)
+                    logger.debug("Received: %s %s", res_type, res)
                     params["messages"].append(response.choices[0].message)
                     params["messages"].append(
                         {
@@ -168,7 +172,7 @@ class ChatGLM:
         # 只存储10条记录，超过滚动清除
         i = len(self.conversation_list[wxid][self.chat_type[wxid]])
         if i > 10:
-            print("滚动清除微信记录：" + wxid)
+            logger.info("滚动清除微信记录：%s", wxid)
             # 删除多余的记录，倒着删，且跳过第一个的系统消息
             del self.conversation_list[wxid][self.chat_type[wxid]][1]
 
@@ -186,10 +190,10 @@ if __name__ == "__main__":
         q = input(">>> ")
         try:
             time_start = datetime.now()  # 记录开始时间
-            print(chat.get_answer(q, "wxid"))
+            logger.info(chat.get_answer(q, "wxid"))
             time_end = datetime.now()  # 记录结束时间
 
             # 计算的时间差为程序的执行时间，单位为秒/s
-            print(f"{round((time_end - time_start).total_seconds(), 2)}s")
+            logger.info(f"{round((time_end - time_start).total_seconds(), 2)}s")
         except Exception as e:
-            print(e)
+            logger.error("错误: %s", str(e), exc_info=True)

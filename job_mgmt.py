@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 
 import time
+import logging
 from typing import Any, Callable
 
 import schedule
+
+# 获取模块级 logger
+logger = logging.getLogger(__name__)
 
 
 class Job(object):
@@ -69,8 +73,14 @@ class Job(object):
 
 
 if __name__ == "__main__":
+    # 设置测试用的日志配置
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+    )
+    
     def printStr(s):
-        print(s)
+        logger.info(s)
 
     job = Job()
     job.onEverySeconds(59, printStr, "onEverySeconds 59")

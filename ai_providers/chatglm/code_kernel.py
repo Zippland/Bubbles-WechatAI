@@ -2,12 +2,16 @@ import base64
 import os
 import queue
 import re
+import logging
 from io import BytesIO
 from subprocess import PIPE
 from typing import Optional, Union
 
 import jupyter_client
 from PIL import Image
+
+# 获取模块级 logger
+logger = logging.getLogger(__name__)
 
 IPYKERNEL = os.environ.get('IPYKERNEL', 'chatglm3')
 
@@ -45,21 +49,21 @@ class CodeKernel(object):
         if self.kernel_config_path:
             self.kernel_manager.load_connection_file()
             self.kernel_manager.start_kernel(stdout=PIPE, stderr=PIPE)
-            print("Backend kernel started with the configuration: {}".format(
-                self.kernel_config_path))
+            logger.info("Backend kernel started with the configuration: %s", 
+                self.kernel_config_path)
         else:
             self.kernel_manager.start_kernel(stdout=PIPE, stderr=PIPE)
-            print("Backend kernel started with the configuration: {}".format(
-                self.kernel_manager.connection_file))
+            logger.info("Backend kernel started with the configuration: %s", 
+                self.kernel_manager.connection_file)
 
         if verbose:
-            print(self.kernel_manager.get_connection_info())
+            logger.debug(self.kernel_manager.get_connection_info())
 
         # Initialize the code kernel
         self.kernel = self.kernel_manager.blocking_client()
         # self.kernel.load_connection_file()
         self.kernel.start_channels()
-        print("Code kernel started.")
+        logger.info("Code kernel started.")
 
     def execute(self, code):
         self.kernel.execute(code)
@@ -79,14 +83,14 @@ class CodeKernel(object):
 
             return shell_msg, msg_out
         except Exception as e:
-            print(e)
+            logger.error("执行代码时出错: %s", str(e), exc_info=True)
             return None
 
     def execute_interactive(self, code, verbose=False):
         shell_msg = self.kernel.execute_interactive(code)
         if shell_msg is queue.Empty:
             if verbose:
-                print("Timeout waiting for shell message.")
+                logger.warning("Timeout waiting for shell message.")
         self.check_msg(shell_msg, verbose=verbose)
 
         return shell_msg
@@ -96,7 +100,7 @@ class CodeKernel(object):
         shell_msg = self.kernel.get_shell_msg(timeout=30)
         if shell_msg is queue.Empty:
             if verbose:
-                print("Timeout waiting for shell message.")
+                logger.warning("Timeout waiting for shell message.")
         self.check_msg(shell_msg, verbose=verbose)
 
         return shell_msg
@@ -111,7 +115,7 @@ class CodeKernel(object):
                 except BaseException:
                     error_msg = "Traceback Error"
             if verbose:
-                print("Error: ", error_msg)
+                logger.error("Error: %s", error_msg)
             return error_msg
         return None
 
@@ -119,29 +123,29 @@ class CodeKernel(object):
         status = msg['content']['status']
         if status == 'ok':
             if verbose:
-                print("Execution succeeded.")
+                logger.info("Execution succeeded.")
         elif status == 'error':
             for line in msg['content']['traceback']:
                 if verbose:
-                    print(line)
+                    logger.error(line)
 
     def shutdown(self):
         # Shutdown the backend kernel
         self.kernel_manager.shutdown_kernel()
-        print("Backend kernel shutdown.")
+        logger.info("Backend kernel shutdown.")
         # Shutdown the code kernel
         self.kernel.shutdown()
-        print("Code kernel shutdown.")
+        logger.info("Code kernel shutdown.")
 
     def restart(self):
         # Restart the backend kernel
         self.kernel_manager.restart_kernel()
-        # print("Backend kernel restarted.")
+        # logger.info("Backend kernel restarted.")
 
     def interrupt(self):
         # Interrupt the backend kernel
         self.kernel_manager.interrupt_kernel()
-        # print("Backend kernel interrupted.")
+        # logger.info("Backend kernel interrupted.")
 
     def is_alive(self):
         return self.kernel.is_alive()

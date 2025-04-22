@@ -2,8 +2,12 @@
 
 import os
 import random
+import logging
 
 import pandas as pd
+
+# 获取模块级 logger
+logger = logging.getLogger(__name__)
 
 
 class Chengyu(object):
@@ -75,5 +79,11 @@ class Chengyu(object):
 cy = Chengyu()
 
 if __name__ == "__main__":
+    # 设置测试用的日志配置
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+    )
+    
     answer = cy.getNext("便宜行事")
-    print(answer)
+    logger.info(answer)
