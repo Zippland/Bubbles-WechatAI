@@ -18,8 +18,8 @@ logging.basicConfig(
     level=logging.WARNING,  # 提高默认日志级别为 WARNING，只显示警告和错误信息
     format=log_format,
     handlers=[
-        logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8'), # 将所有日志写入文件
-        logging.StreamHandler(sys.stdout) # 同时输出到控制台
+        # logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8'), # 将所有日志写入文件
+        # logging.StreamHandler(sys.stdout) # 同时输出到控制台
     ]
 )
 
