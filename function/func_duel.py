@@ -610,7 +610,7 @@ class HarryPotterDuel:
         # Boss战特殊设置
         if self.is_boss_fight:
             # Boss战胜率极低，设为5%
-            self.player_win_chance = 1.0
+            self.player_win_chance = 0.05
             # 添加Boss战提示信息
             self.steps.append("⚔️ Boss战开始！挑战强大的魔法师泡泡！")
             
@@ -1393,6 +1393,22 @@ SNEAK_ATTACK_FAILURE_MESSAGES = [
     "{attacker} 发现 {target} 的口袋是画上去的！可恶，被摆了一道！🖌️",
 ]
 
+# --- 新增：偷到道具的随机句子 ---
+SNEAK_ATTACK_ITEM_SUCCESS_MESSAGES = [
+    "趁乱摸鱼！{attacker} 竟然从 {target} 身上摸走了一件 {item_name_cn}！真是妙手空空！👏",
+    "运气爆棚！{attacker} 偷袭失败，但顺走了 {target} 的一件 {item_name_cn}！🥳",
+    "{target} 光顾着得意，没注意到 {attacker} 悄悄拿走了一件 {item_name_cn}！🤭",
+    "“失之东隅，收之桑榆”，{attacker} 虽然没偷到分，但拐走了一件 {item_name_cn}！🎁",
+    "神偷再现！{attacker} 从 {target} 那里顺走了一件 {item_name_cn}！🔮",
+]
+
+# --- 新增：道具英文名到中文名的映射 ---
+ITEM_NAME_MAP = {
+    "elder_wand": "老魔杖 🪄",
+    "magic_stone": "魔法石 💎",
+    "invisibility_cloak": "隐身衣 🧥"
+}
+
 # --- 新增：处理偷袭逻辑的函数 ---
 def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) -> str:
     """
@@ -1523,11 +1539,59 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
                     logger_duel.info(f"偷袭成功: {attacker_name} 偷取 {target_name} {points_stolen} 分")
 
                 else:
-                    # --- 偷袭失败 ---
-                    # 选择并格式化失败消息
+                    # --- 偷袭失败，尝试偷道具 ---
+                    logger_duel.info(f"偷袭分数失败: {attacker_name} 偷袭 {target_name}. 尝试偷道具...")
+                    item_steal_prob = 0.05  # 5% 概率偷道具
+                    
+                    if random.random() < item_steal_prob:
+                        # 获取目标玩家道具信息
+                        cursor.execute("""
+                        SELECT elder_wand, magic_stone, invisibility_cloak
+                        FROM duel_players
+                        WHERE group_id = ? AND player_name = ?
+                        """, (group_id, target_name))
+                        result = cursor.fetchone()
+                        
+                        if result:
+                            # 构建可偷道具列表和权重
+                            available_item_names = []
+                            item_weights = []
+                            
+                            if result["elder_wand"] > 0:
+                                available_item_names.append("elder_wand")
+                                item_weights.append(result["elder_wand"])
+                            
+                            if result["magic_stone"] > 0:
+                                available_item_names.append("magic_stone")
+                                item_weights.append(result["magic_stone"])
+                            
+                            if result["invisibility_cloak"] > 0:
+                                available_item_names.append("invisibility_cloak")
+                                item_weights.append(result["invisibility_cloak"])
+                            
+                            if available_item_names:
+                                # 根据权重随机选择一件道具
+                                item_stolen = random.choices(available_item_names, weights=item_weights, k=1)[0]
+                                item_name_cn = ITEM_NAME_MAP.get(item_stolen, item_stolen)
+                                
+                                # 更新数据库：目标减道具，攻击者加道具
+                                sql_update_target = f"UPDATE duel_players SET {item_stolen} = MAX(0, {item_stolen} - 1) WHERE group_id = ? AND player_name = ?"
+                                sql_update_attacker = f"UPDATE duel_players SET {item_stolen} = {item_stolen} + 1 WHERE group_id = ? AND player_name = ?"
+                                
+                                cursor.execute(sql_update_target, (group_id, target_name))
+                                cursor.execute(sql_update_attacker, (group_id, attacker_name))
+                                conn.commit()
+                                
+                                # 选择并格式化偷道具成功消息
+                                message_template = random.choice(SNEAK_ATTACK_ITEM_SUCCESS_MESSAGES)
+                                result_message = message_template.format(attacker=attacker_name, target=target_name, item_name_cn=item_name_cn)
+                                logger_duel.info(f"偷道具成功: {attacker_name} 偷取了 {target_name} 的 {item_stolen}")
+                                return result_message
+                    
+                    # 偷分失败且偷道具也失败或目标没有道具
                     message_template = random.choice(SNEAK_ATTACK_FAILURE_MESSAGES)
                     result_message = message_template.format(attacker=attacker_name, target=target_name)
-                    logger_duel.info(f"偷袭失败: {attacker_name} 偷袭 {target_name}")
+                    logger_duel.info(f"偷袭完全失败: {attacker_name} 偷袭 {target_name}")
 
                 return result_message
 
@@ -1537,3 +1601,4 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
     except Exception as e:
         logger_duel.error(f"处理偷袭时发生未知错误: {e}", exc_info=True)
         return f"处理偷袭时发生内部错误: {e}"
+
