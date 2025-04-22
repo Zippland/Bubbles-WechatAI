@@ -106,41 +106,71 @@ def handle_duel(ctx: 'MessageContext', match: Optional[Match]) -> bool:
     # 获取挑战者昵称
     challenger_name = ctx.sender_name
     group_id = ctx.msg.roomid
-    
-    # --- 新增：Boss 战资格检查 ---
-    if opponent_name == "泡泡":  # 检查对手是否为 Boss
-        try:
-            # 创建 DuelRankSystem 实例来查询玩家分数
-            rank_system = DuelRankSystem(group_id)
-            # 获取玩家数据
-            player_data = rank_system.get_player_data(challenger_name)
-            challenger_score = player_data.get("score", 0)
-            
-            # 检查分数是否低于 100
-            if challenger_score < 100:
-                # 分数不足，发送有趣提示并阻止决斗
-                funny_messages = [
-                    f"嘿，{challenger_name}！你当前的积分 ({challenger_score}) 还没攒够挑战大魔王 '泡泡' 的勇气呢！先去决斗场练练级吧！💪",
-                    f"勇士 {challenger_name} ({challenger_score}分)，强大的 '泡泡' 觉得你还需要更多历练才能与之一战。先去赚点积分壮壮胆吧！💰",
-                    f"({challenger_score}分) 就想挑战 Boss '泡泡'？{challenger_name}，你这是要去送人头吗？'泡泡' 表示太弱了，拒绝接待！🚫",
-                    f"挑战 Boss '泡泡' 需要至少100积分作为门票，{challenger_name} ({challenger_score}分) 好像还差一点点哦~ 😉",
-                    f"'泡泡' 正在冥想，感觉到 {challenger_name} 的力量 ({challenger_score}分) 尚不足以撼动祂，让你再修炼修炼。🧘"
-                ]
-                message = random.choice(funny_messages)
-                ctx.send_text(message)
-                if ctx.logger:
-                    ctx.logger.info(f"玩家 {challenger_name} 积分 {challenger_score} 不足100，阻止发起 Boss 战")
-                return True  # 命令已处理，阻止后续逻辑
-        except Exception as e:
+
+    # --- 新增：决斗资格检查 (包括分数和 Boss 战) ---
+    try:
+        rank_system = DuelRankSystem(group_id)
+        # 获取双方玩家数据和分数
+        challenger_data = rank_system.get_player_data(challenger_name)
+        opponent_data = rank_system.get_player_data(opponent_name)
+        challenger_score = challenger_data.get("score", 0)
+        opponent_score = opponent_data.get("score", 0)
+
+        is_boss_battle = (opponent_name == "泡泡")
+
+        # 检查 Boss 战资格 (仅检查挑战者分数)
+        if is_boss_battle and challenger_score < 100:
+            funny_messages = [
+                f"嘿，{challenger_name}！你当前的积分 ({challenger_score}) 还没攒够挑战大魔王 '泡泡' 的勇气呢！先去决斗场练练级吧！💪",
+                f"勇士 {challenger_name} ({challenger_score}分)，强大的 '泡泡' 觉得你还需要更多历练才能与之一战。先去赚点积分壮壮胆吧！💰",
+                f"({challenger_score}分) 就想挑战 Boss '泡泡'？{challenger_name}，你这是要去送人头吗？'泡泡' 表示太弱了，拒绝接待！🚫",
+                f"挑战 Boss '泡泡' 需要至少100积分作为门票，{challenger_name} ({challenger_score}分) 好像还差一点点哦~ 😉",
+                f"'泡泡' 正在冥想，感觉到 {challenger_name} 的力量 ({challenger_score}分) 尚不足以撼动祂，让你再修炼修炼。🧘"
+            ]
+            message = random.choice(funny_messages)
+            ctx.send_text(message)
             if ctx.logger:
-                ctx.logger.error(f"检查 Boss 战资格时出错: {e}", exc_info=True)
-            ctx.send_text("⚠️ 检查挑战资格时发生错误，请稍后再试。")
-            return True  # 出错也阻止后续逻辑
-    # --- Boss 战资格检查结束 ---
-    
-    # 使用决斗管理器启动决斗
+                ctx.logger.info(f"玩家 {challenger_name} 积分 {challenger_score} 不足100，阻止发起 Boss 战")
+            return True # 命令已处理，阻止后续逻辑
+
+        # 检查普通决斗资格 (检查双方分数)
+        elif not is_boss_battle and (challenger_score < 100 or opponent_score < 100):
+            low_score_player = ""
+            low_score_value = 0
+            if challenger_score < 100 and opponent_score < 100:
+                 low_score_player = f"{challenger_name} ({challenger_score}分) 和 {opponent_name} ({opponent_score}分) 都"
+                 low_score_value = min(challenger_score, opponent_score) # 不重要，仅用于日志
+            elif challenger_score < 100:
+                 low_score_player = f"{challenger_name} ({challenger_score}分)"
+                 low_score_value = challenger_score
+            else: # opponent_score < 100
+                 low_score_player = f"{opponent_name} ({opponent_score}分)"
+                 low_score_value = opponent_score
+            
+            funny_messages = [
+                f"哎呀！{low_score_player} 的决斗积分还没到100分呢，好像还没做好上场的准备哦！😅",
+                f"等等！根据决斗场规则，{low_score_player} 的积分不足100分，暂时无法参与决斗。先去打打小怪兽吧！👾",
+                f"裁判举牌！🚩 {low_score_player} 决斗积分未满100，本场决斗无效！请先提升实力再来挑战！",
+                f"看起来 {low_score_player} 还是个决斗新手（积分不足100），先熟悉一下场地，找点低级对手练练手吧！😉",
+                f"呜~~~ 决斗场的能量保护罩拒绝了 {low_score_player}（积分不足100）进入！先去充点能（分）吧！⚡"
+            ]
+            message = random.choice(funny_messages)
+            ctx.send_text(message)
+            if ctx.logger:
+                ctx.logger.info(f"因玩家 {low_score_player} 积分 ({low_score_value}) 不足100，阻止发起普通决斗")
+            return True # 命令已处理，阻止后续逻辑
+
+    except Exception as e:
+        if ctx.logger:
+            ctx.logger.error(f"检查决斗资格时出错: {e}", exc_info=True)
+        ctx.send_text("⚠️ 检查决斗资格时发生错误，请稍后再试。")
+        return True # 出错也阻止后续逻辑
+    # --- 决斗资格检查结束 ---
+
+    # 使用决斗管理器启动决斗 (只有通过所有检查才会执行到这里)
     if ctx.robot and hasattr(ctx.robot, "duel_manager"):
         duel_manager = ctx.robot.duel_manager
+        # 注意：start_duel_thread 现在只会在资格检查通过后被调用
         if not duel_manager.start_duel_thread(challenger_name, opponent_name, group_id, True):
             ctx.send_text("⚠️ 目前有其他决斗正在进行中，请稍后再试！")
         # 决斗管理器内部会发送消息，所以这里不需要额外发送
