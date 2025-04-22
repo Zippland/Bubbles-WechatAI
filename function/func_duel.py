@@ -609,8 +609,8 @@ class HarryPotterDuel:
         
         # Boss战特殊设置
         if self.is_boss_fight:
-            # Boss战胜率极低，设为5%
-            self.player_win_chance = 0.05
+            # Boss战胜率极低，设为10%
+            self.player_win_chance = 0.1
             # 添加Boss战提示信息
             self.steps.append("⚔️ Boss战开始！挑战强大的魔法师泡泡！")
             
@@ -834,7 +834,7 @@ class HarryPotterDuel:
                             # 更新失败者数据
                             sql_update = """
                             UPDATE duel_players SET
-                            score = MAX(1, score - 10),
+                            score = MAX(1, score - 100),
                             losses = losses + 1,
                             total_matches = total_matches + 1,
                             last_updated = datetime('now')
@@ -854,7 +854,7 @@ class HarryPotterDuel:
                                 winner["name"],
                                 loser["name"],
                                 1,  # is_boss_fight
-                                10  # 扣10分
+                                100  # 扣100分
                             ))
                             
                             conn.commit()
@@ -863,7 +863,7 @@ class HarryPotterDuel:
                 
                 result = (
                     f"💀 {loser['name']} 不敌强大的Boss泡泡！\n\n"
-                    f"积分: -10分\n"
+                    f"积分: -100分\n"
                     f"再接再厉，下次挑战吧！"
                 )
                 
