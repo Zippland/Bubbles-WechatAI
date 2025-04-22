@@ -1491,9 +1491,12 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
                 prob_percent = success_prob * 100
                 logger_duel.info(f"偷袭计算: {attacker_name}({attacker_rank}) vs {target_name}({target_rank}), 总人数: {total_players}, 成功率: {prob_percent:.1f}%")
 
+                roll_successful = random.random() < success_prob
+                points_exchanged_successfully = False  # 标记是否成功转移了分数
+
                 # 决定偷袭是否成功
-                if random.random() < success_prob:
-                    # --- 偷袭成功 ---
+                if roll_successful:
+                    # --- 偷袭概率判定成功，尝试计算分数转移 ---
                     # 获取分数差
                     cursor.execute("""
                     SELECT t1.score as attacker_score, t2.score as target_score
@@ -1502,45 +1505,69 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
                       AND t2.group_id = ? AND t2.player_name = ?
                     """, (group_id, attacker_name, group_id, target_name))
                     result = cursor.fetchone()
+                    # 添加检查，以防万一查询不到结果
+                    if not result:
+                        logger_duel.error(f"偷袭成功后查询分数失败: {attacker_name} vs {target_name}")
+                        return "❌ 处理偷袭时发生内部错误：无法获取玩家分数。"
+                        
                     attacker_score = result["attacker_score"]
                     target_score = result["target_score"]
                     
+                    # 1. 计算潜在偷取分数
                     score_difference = abs(attacker_score - target_score)
-                    points_stolen = max(random.randint(10, 50), int(score_difference * 0.1))  # 偷取(10-50)或分数差的10%，取最大值
+                    potential_points_stolen = max(random.randint(10, 50), int(score_difference * 0.1))  # 偷取(10-50)或分数差的10%，取最大值
 
-                    # 更新分数
-                    cursor.execute(
-                        "UPDATE duel_players SET score = score + ? WHERE group_id = ? AND player_name = ?",
-                        (points_stolen, group_id, attacker_name)
-                    )
-                    cursor.execute(
-                        "UPDATE duel_players SET score = MAX(1, score - ?) WHERE group_id = ? AND player_name = ?",
-                        (points_stolen, group_id, target_name)
-                    )
-                    
-                    # 记录到历史记录（可选）
-                    cursor.execute("""
-                    INSERT INTO duel_history (group_id, timestamp, winner, loser, points)
-                    VALUES (?, ?, ?, ?, ?)
-                    """, (
-                        group_id,
-                        time.strftime("%Y-%m-%d %H:%M:%S"),
-                        attacker_name,
-                        target_name,
-                        points_stolen
-                    ))
-                    
-                    # 提交事务
-                    conn.commit()
+                    # 2. 计算目标实际能损失的最大分数 (最低保留1分)
+                    max_points_target_can_lose = max(0, target_score - 1)
 
-                    # 选择并格式化成功消息
-                    message_template = random.choice(SNEAK_ATTACK_SUCCESS_MESSAGES)
-                    result_message = message_template.format(attacker=attacker_name, target=target_name, points=points_stolen)
-                    logger_duel.info(f"偷袭成功: {attacker_name} 偷取 {target_name} {points_stolen} 分")
+                    # 3. 确定实际交换的分数
+                    actual_points_exchanged = min(potential_points_stolen, max_points_target_can_lose)
 
-                else:
-                    # --- 偷袭失败，尝试偷道具 ---
-                    logger_duel.info(f"偷袭分数失败: {attacker_name} 偷袭 {target_name}. 尝试根据目标道具数量计算偷道具概率...")
+                    # 只有实际交换分数大于0时才更新数据库和记录历史
+                    if actual_points_exchanged > 0:
+                        # 更新分数 (零和交换)
+                        cursor.execute(
+                            "UPDATE duel_players SET score = score + ? WHERE group_id = ? AND player_name = ?",
+                            (actual_points_exchanged, group_id, attacker_name)
+                        )
+                        cursor.execute(
+                            "UPDATE duel_players SET score = score - ? WHERE group_id = ? AND player_name = ?",
+                            (actual_points_exchanged, group_id, target_name)
+                        )
+                        
+                        # 记录到历史记录
+                        cursor.execute("""
+                        INSERT INTO duel_history (group_id, timestamp, winner, loser, points)
+                        VALUES (?, ?, ?, ?, ?)
+                        """, (
+                            group_id,
+                            time.strftime("%Y-%m-%d %H:%M:%S"),
+                            attacker_name, # 偷袭者视为 "winner"
+                            target_name, # 被偷袭者视为 "loser"
+                            actual_points_exchanged # 使用实际交换的分数
+                        ))
+                        
+                        # 提交事务
+                        conn.commit()
+                        logger_duel.info(f"偷袭成功: {attacker_name} 偷取 {target_name} {actual_points_exchanged} 分 (原目标分数: {target_score}, 潜在偷取: {potential_points_stolen})")
+                        
+                        # 选择并格式化成功消息 (使用 actual_points_exchanged)
+                        message_template = random.choice(SNEAK_ATTACK_SUCCESS_MESSAGES)
+                        result_message = message_template.format(attacker=attacker_name, target=target_name, points=actual_points_exchanged)
+                        
+                        points_exchanged_successfully = True  # 标记成功转移了分数
+                        return result_message  # 只有在成功转移分数时才直接返回
+                    else:
+                        # 如果实际交换分数为0 (例如目标只有1分)
+                        logger_duel.info(f"偷袭概率判定成功但未发生分数转移: {attacker_name} 偷袭 {target_name} (目标分数: {target_score})，转为尝试偷道具...")
+                        # 不设置 points_exchanged_successfully = True
+                        # 不返回，继续执行下面的偷道具逻辑
+                
+                # --- 如果偷袭概率判定失败，或者判定成功但未转移分数，则尝试偷道具 ---
+                if not points_exchanged_successfully:  # 这个条件覆盖了概率判定失败和概率判定成功但未转移分数两种情况
+                    # 根据情况选择日志消息
+                    if not roll_successful:  # 如果是概率判定失败的情况
+                        logger_duel.info(f"偷袭分数失败: {attacker_name} 偷袭 {target_name}. 尝试根据目标道具数量计算偷道具概率...")
 
                     # --- 修改：提前获取目标道具信息以计算概率 ---
                     cursor.execute("""
@@ -1559,10 +1586,9 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
                                              target_items_result["magic_stone"] +
                                              target_items_result["invisibility_cloak"])
 
-                        # 计算动态概率，每件道具增加 1%，上限暂定为 10%
-                        dynamic_prob = total_items_count * 0.01
-                        item_steal_prob = min(dynamic_prob, 0.10) # 最高 10%
-                        logger_duel.info(f"目标共有 {total_items_count} 件道具，计算出的偷道具概率为: {item_steal_prob*100:.1f}% (原始计算值: {dynamic_prob*100:.1f}%)")
+                        # 计算动态概率，每件道具增加 1%
+                        item_steal_prob = total_items_count * 0.01
+                        logger_duel.info(f"目标共有 {total_items_count} 件道具，计算出的偷道具概率为: {item_steal_prob*100:.1f}% ")
                     else:
                          # 如果查询不到目标道具信息（理论上不应发生，因为前面检查过玩家存在）
                          logger_duel.warning(f"未能查询到目标 {target_name} 的道具信息，无法计算偷道具概率。")
@@ -1623,9 +1649,7 @@ def attempt_sneak_attack(attacker_name: str, target_name: str, group_id: str) ->
                          logger_duel.info(f"偷袭完全失败: {attacker_name} 偷袭 {target_name}，且目标没有任何道具。")
                     else:
                          logger_duel.info(f"偷袭完全失败: {attacker_name} 偷袭 {target_name}，未达到偷道具概率 {item_steal_prob*100:.1f}%。")
-                    # 注意：偷分失败并不需要提交事务，因为没有改动数据库
-                    # conn.commit() # 这一行是多余的，应该删除
-                return result_message
+                    return result_message
 
     except sqlite3.Error as e:
         logger_duel.error(f"处理偷袭时发生数据库错误: {e}", exc_info=True)
