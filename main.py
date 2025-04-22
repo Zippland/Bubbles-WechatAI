@@ -15,18 +15,23 @@ if not os.path.exists(log_dir):
 # 配置 logging
 log_format = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 logging.basicConfig(
-    level=logging.INFO,  # 设置日志级别为 INFO，意味着 INFO, WARNING, ERROR, CRITICAL 都会被记录
+    level=logging.WARNING,  # 提高默认日志级别为 WARNING，只显示警告和错误信息
     format=log_format,
     handlers=[
-        logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8'), # 将日志写入文件
+        logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8'), # 将所有日志写入文件
         logging.StreamHandler(sys.stdout) # 同时输出到控制台
     ]
 )
 
-# 如果想让某些第三方库的日志不那么详细，可以单独设置它们的日志级别
-logging.getLogger("requests").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# 为特定模块设置更具体的日志级别
+logging.getLogger("requests").setLevel(logging.ERROR)  # 提高为 ERROR
+logging.getLogger("urllib3").setLevel(logging.ERROR)   # 提高为 ERROR
+logging.getLogger("httpx").setLevel(logging.ERROR)     # 提高为 ERROR
+
+# 常见的自定义模块日志设置，按需修改
+logging.getLogger("Weather").setLevel(logging.WARNING)
+logging.getLogger("ai_providers").setLevel(logging.WARNING)
+logging.getLogger("commands").setLevel(logging.WARNING)
 
 from function.func_report_reminder import ReportReminder
 from configuration import Config
@@ -36,7 +41,7 @@ from wcferry import Wcf
 
 def main(chat_type: int):
     config = Config()
-    wcf = Wcf(debug=True)
+    wcf = Wcf(debug=False)  # 将 debug 设置为 False 减少 wcf 的调试输出
     
     # 定义全局变量robot，使其在handler中可访问
     global robot
@@ -82,11 +87,24 @@ if __name__ == "__main__":
                         help=f'选择默认模型参数序号: {ChatType.help_hint()}（可通过配置文件为不同群指定模型）')
     parser.add_argument('-d', '--debug', action='store_true',
                         help='启用调试模式，输出更详细的日志信息')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                        help='安静模式，只输出错误信息')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='详细输出模式，显示所有信息日志')
     args = parser.parse_args()
     
-    # 如果启用了调试模式，则将日志级别设置为 DEBUG
+    # 处理日志级别参数
     if args.debug:
+        # 调试模式优先级最高
         logging.getLogger().setLevel(logging.DEBUG)
-        logging.info("已启用调试模式，将显示详细日志信息")
+        print("已启用调试模式，将显示所有详细日志信息")
+    elif args.quiet:
+        # 安静模式，控制台只显示错误
+        logging.getLogger().setLevel(logging.ERROR)
+        print("已启用安静模式，控制台只显示错误信息")
+    elif args.verbose:
+        # 详细模式，显示所有 INFO 级别日志
+        logging.getLogger().setLevel(logging.INFO)
+        print("已启用详细模式，将显示所有信息日志")
     
     main(args.c)
