@@ -18,7 +18,8 @@ class ReportReminder:
             today = datetime.datetime.now().date()
             # 如果是非工作日
             if not is_workday(today):
-                robot.sendTextMsg("休息日快乐", receiver)
+                #robot.sendTextMsg("休息日快乐", receiver)
+                pass
             # 如果是工作日
             if is_workday(today):
                 robot.sendTextMsg("该发日报啦", receiver)
