@@ -5,7 +5,8 @@ from .handlers import (
     handle_duel_stats, handle_check_equipment, handle_reset_memory,
     handle_summary, handle_clear_messages, handle_news_request,
     handle_rename, handle_chengyu, handle_chitchat, handle_insult,
-    handle_perplexity_ask, handle_reminder, handle_list_reminders, handle_delete_reminder
+    handle_perplexity_ask, handle_reminder, handle_list_reminders, handle_delete_reminder,
+    handle_weather, handle_weather_forecast
 )
 
 # 命令列表，按优先级排序
@@ -35,12 +36,12 @@ COMMANDS = [
     
     Command(
         name="reset_memory",
-        pattern=re.compile(r"^(reset|重置|重置记忆)$", re.IGNORECASE),
+        pattern=re.compile(r"^(reset|重置)$", re.IGNORECASE),
         scope="both",       # 群聊和私聊都支持
         need_at=True,       # 需要@机器人
         priority=20,        # 优先级较高
         handler=handle_reset_memory,
-        description="重置与机器人的对话历史"
+        description="重置机器人缓存里的上下文历史"
     ),
     
     # ======== Perplexity AI 命令 ========
@@ -67,15 +68,35 @@ COMMANDS = [
     
     Command(
         name="clear_messages",
-        pattern=re.compile(r"^(clearmessages|清除消息|清除历史)$", re.IGNORECASE),
+        pattern=re.compile(r"^(clearmessages|清除历史)$", re.IGNORECASE),
         scope="group",      # 仅群聊支持
         need_at=True,       # 需要@机器人
         priority=31,        # 优先级一般
         handler=handle_clear_messages,
-        description="清除群聊的历史消息记录"
+        description="从数据库中清除群聊的历史消息记录"
     ),
     
     # ======== 新闻和实用工具 ========
+    Command(
+        name="weather_forecast",
+        pattern=re.compile(r"^(?:天气预报|预报)\s+(.+)$"), # 匹配 天气预报/预报 城市名
+        scope="both",      # 群聊和私聊都支持
+        need_at=True,      # 需要@机器人
+        priority=38,       # 优先级比天气高一点
+        handler=handle_weather_forecast,
+        description="查询指定城市未来几天的天气预报 (例如：天气预报 北京)"
+    ),
+    
+    Command(
+        name="weather",
+        pattern=re.compile(r"^(?:天气|温度)\s+(.+)$"), # 匹配 天气/温度 城市名
+        scope="both",      # 群聊和私聊都支持
+        need_at=True,      # 需要@机器人
+        priority=39,       # 优先级设置在新闻命令前
+        handler=handle_weather,
+        description="查询指定城市的天气 (例如：天气 北京)"
+    ),
+    
     Command(
         name="news",
         pattern=re.compile(r"^新闻$"),

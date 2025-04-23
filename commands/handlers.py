@@ -3,6 +3,7 @@ import random
 from typing import Optional, Match, Dict, Any
 import json # 确保已导入json
 from datetime import datetime # 确保已导入datetime
+import os # 导入os模块用于文件路径操作
 from function.func_duel import DuelRankSystem 
 
 # 导入AI模型
@@ -25,19 +26,24 @@ def handle_help(ctx: 'MessageContext', match: Optional[Match]) -> bool:
     help_text = [
         "🤖 泡泡的指令列表 🤖",
         "",
+        "【实用工具】",
+        "- 天气/温度 [城市名]",
+        "- 天气预报/预报 [城市名]",
+        "- 新闻",
+        "- ask [问题]",
+        "",
         "【决斗 & 偷袭】",
         "- 决斗@XX",
-        "- 偷袭@XX / 偷分@XX",
+        "- 偷袭@XX",
         "- 决斗排行/排行榜",
         "- 我的战绩/决斗战绩",
         "- 我的装备/查看装备",
         "- 改名 [旧名] [新名]",
         "",
         "【提醒】",
-        "- 提醒xxxxx：支持一次性、每日、每周",
+        "- 提醒xxxxx：一次性、每日、每周",
         "- 查看提醒/我的提醒/提醒列表",
-        "- 删除提醒 [ID]",
-        "- 删除提醒 all",
+        "- 删除提醒 [ID]/all",
         "",
         "【成语】",
         "- #成语：接龙",
@@ -47,9 +53,6 @@ def handle_help(ctx: 'MessageContext', match: Optional[Match]) -> bool:
         "- summary/总结",
         "- clearmessages/清除历史",
         "- reset/重置",
-        "",
-        "【Perplexity AI】",
-        "- ask [问题]：使用专业模式解答问题",
         ""
     ]
     help_text = "\n".join(help_text)
@@ -1123,4 +1126,142 @@ def handle_delete_reminder(ctx: 'MessageContext', match: Optional[Match]) -> boo
     if ctx.is_group and hasattr(ctx.robot, "goblin_gift_manager"):
         ctx.robot.goblin_gift_manager.try_trigger(ctx.msg)
         
+    return True 
+
+def handle_weather(ctx: 'MessageContext', match: Optional[Match]) -> bool:
+    """
+    处理 "天气" 或 "温度" 命令
+
+    匹配: 天气 [城市名] 或 温度 [城市名]
+    """
+    if not match:
+        return False
+
+    city_name = match.group(1).strip()
+    if not city_name:
+        ctx.send_text("🤔 请告诉我你想查询哪个城市的天气，例如：天气 北京")
+        return True
+
+    if ctx.logger:
+        ctx.logger.info(f"天气查询指令匹配: 城市={city_name}")
+
+    # --- 加载城市代码 ---
+    city_codes: Dict[str, str] = {}
+    city_code_path = os.path.join(os.path.dirname(__file__), '..', 'function', 'main_city.json') # 确保路径正确
+    try:
+        with open(city_code_path, 'r', encoding='utf-8') as f:
+            city_codes = json.load(f)
+    except FileNotFoundError:
+        if ctx.logger:
+            ctx.logger.error(f"城市代码文件未找到: {city_code_path}")
+        ctx.send_text("⚠️ 抱歉，天气功能所需的城市列表文件丢失了。")
+        return True
+    except json.JSONDecodeError:
+        if ctx.logger:
+            ctx.logger.error(f"无法解析城市代码文件: {city_code_path}")
+        ctx.send_text("⚠️ 抱歉，天气功能的城市列表文件格式错误。")
+        return True
+    except Exception as e:
+         if ctx.logger:
+            ctx.logger.error(f"加载城市代码时发生未知错误: {e}", exc_info=True)
+         ctx.send_text("⚠️ 抱歉，加载城市代码时发生错误。")
+         return True
+    # --- 城市代码加载完毕 ---
+
+    city_code = city_codes.get(city_name)
+
+    if not city_code:
+        # 尝试模糊匹配 (可选，如果需要)
+        found = False
+        for name, code in city_codes.items():
+            if city_name in name: # 如果输入的名字是城市全名的一部分
+                city_code = code
+                city_name = name # 使用找到的完整城市名
+                if ctx.logger:
+                    ctx.logger.info(f"城市 '{match.group(1).strip()}' 未精确匹配，使用模糊匹配结果: {city_name} ({city_code})")
+                found = True
+                break
+        if not found:
+            ctx.send_text(f"😕 找不到城市 '{city_name}' 的天气信息，请检查城市名称是否正确。")
+            return True
+
+    # 获取天气信息
+    try:
+        from function.func_weather import Weather
+        weather_info = Weather(city_code).get_weather()
+        ctx.send_text(weather_info)
+    except Exception as e:
+        if ctx.logger:
+            ctx.logger.error(f"获取城市 {city_name}({city_code}) 天气时出错: {e}", exc_info=True)
+        ctx.send_text(f"😥 获取 {city_name} 天气时遇到问题，请稍后再试。")
+
+    return True 
+
+def handle_weather_forecast(ctx: 'MessageContext', match: Optional[Match]) -> bool:
+    """
+    处理 "天气预报" 或 "预报" 命令
+
+    匹配: 天气预报 [城市名] 或 预报 [城市名]
+    """
+    if not match:
+        return False
+
+    city_name = match.group(1).strip()
+    if not city_name:
+        ctx.send_text("🤔 请告诉我你想查询哪个城市的天气预报，例如：天气预报 北京")
+        return True
+
+    if ctx.logger:
+        ctx.logger.info(f"天气预报查询指令匹配: 城市={city_name}")
+
+    # --- 加载城市代码 ---
+    city_codes: Dict[str, str] = {}
+    city_code_path = os.path.join(os.path.dirname(__file__), '..', 'function', 'main_city.json') # 确保路径正确
+    try:
+        with open(city_code_path, 'r', encoding='utf-8') as f:
+            city_codes = json.load(f)
+    except FileNotFoundError:
+        if ctx.logger:
+            ctx.logger.error(f"城市代码文件未找到: {city_code_path}")
+        ctx.send_text("⚠️ 抱歉，天气功能所需的城市列表文件丢失了。")
+        return True
+    except json.JSONDecodeError:
+        if ctx.logger:
+            ctx.logger.error(f"无法解析城市代码文件: {city_code_path}")
+        ctx.send_text("⚠️ 抱歉，天气功能的城市列表文件格式错误。")
+        return True
+    except Exception as e:
+         if ctx.logger:
+            ctx.logger.error(f"加载城市代码时发生未知错误: {e}", exc_info=True)
+         ctx.send_text("⚠️ 抱歉，加载城市代码时发生错误。")
+         return True
+    # --- 城市代码加载完毕 ---
+
+    city_code = city_codes.get(city_name)
+
+    if not city_code:
+        # 尝试模糊匹配 (可选，如果需要)
+        found = False
+        for name, code in city_codes.items():
+            if city_name in name: # 如果输入的名字是城市全名的一部分
+                city_code = code
+                city_name = name # 使用找到的完整城市名
+                if ctx.logger:
+                    ctx.logger.info(f"城市 '{match.group(1).strip()}' 未精确匹配，使用模糊匹配结果: {city_name} ({city_code})")
+                found = True
+                break
+        if not found:
+            ctx.send_text(f"😕 找不到城市 '{city_name}' 的天气信息，请检查城市名称是否正确。")
+            return True
+
+    # 获取天气信息 (包含预报)
+    try:
+        from function.func_weather import Weather
+        weather_info = Weather(city_code).get_weather(include_forecast=True)  # 注意这里传入True
+        ctx.send_text(weather_info)
+    except Exception as e:
+        if ctx.logger:
+            ctx.logger.error(f"获取城市 {city_name}({city_code}) 天气预报时出错: {e}", exc_info=True)
+        ctx.send_text(f"😥 获取 {city_name} 天气预报时遇到问题，请稍后再试。")
+
     return True 
